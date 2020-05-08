@@ -33,22 +33,24 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
-    let future1 = watch_file(Path::new("src/main.rs"));
-    let future2 = watch_file(Path::new("Cargo.toml"));
+    let out_path = format!("outfiles/{}", Utc::now().format("%Y-%m-%d-%H-%M-%S"));
+    let out_dir = Path::new(&out_path);
+    let future1 = watch_file(Path::new("src/main.rs"), out_dir, 0);
+    let future2 = watch_file(Path::new("Cargo.toml"), out_dir, 1);
     try_join!(future1, future2)?;
     Ok(())
 }
 
 
-async fn watch_file(path: &Path) -> Result<(), io::Error>{
+async fn watch_file(file_path: &Path, out_dir: &Path, index: usize) -> Result<(), io::Error>{
     let mut interval = time::interval(Duration::from_millis(1000));
-    let mut previous_contents = fs::read_to_string(path).expect("Something went wrong");
+    let mut previous_contents = fs::read_to_string(file_path).expect("Something went wrong");
 
-    let out_path = format!("outfiles/{}", Utc::now());
-    let out_dir = Path::new(&out_path);
-    fs::create_dir(&out_dir)?;
+    let mut out_dir = out_dir.to_path_buf();
+    out_dir.push(format!("{}", index));
+    fs::create_dir_all(&out_dir)?;
     let changes_filename = {
-        let mut buf = out_dir.to_path_buf();
+        let mut buf = out_dir.clone();
         buf.push("changes.json");
         buf
     };
@@ -59,8 +61,8 @@ async fn watch_file(path: &Path) -> Result<(), io::Error>{
         .open(changes_filename)
         .unwrap();
     let original_filename = {
-        let mut buf = out_dir.to_path_buf();
-        buf.push(path.file_name().unwrap());
+        let mut buf = out_dir.clone();
+        buf.push(file_path.file_name().unwrap());
         buf
     };
     let mut original_file = OpenOptions::new()
@@ -74,7 +76,7 @@ async fn watch_file(path: &Path) -> Result<(), io::Error>{
 
     loop {
         interval.tick().await;
-        let current_contents = fs::read_to_string("src/main.rs").expect("Something went wrong");
+        let current_contents = fs::read_to_string(file_path).expect("Something went wrong");
         let changeset = Changeset::new(&previous_contents, &current_contents, "\n");
         if changeset.distance > 0 {
             writeln!(changes_file, "{}", diffs_to_json(&changeset.diffs))?;

@@ -11,8 +11,6 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::time::Duration;
 use tokio::time;
-use tokio::try_join;
-use std::path::{Path};
 
 fn diffs_to_json(diffs: &Vec<Difference>) -> String {
     let mut values = Vec::new();
@@ -33,36 +31,19 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
-    let future1 = watch_file(Path::new("src/main.rs"));
-    let future2 = watch_file(Path::new("Cargo.toml"));
-    try_join!(future1, future2)?;
-    Ok(())
-}
-
-
-async fn watch_file(path: &Path) -> Result<(), io::Error>{
     let mut interval = time::interval(Duration::from_millis(1000));
-    let mut previous_contents = fs::read_to_string(path).expect("Something went wrong");
+    let mut previous_contents = fs::read_to_string("src/main.rs").expect("Something went wrong");
 
-    let out_path = format!("outfiles/{}", Utc::now());
-    let out_dir = Path::new(&out_path);
+    let out_dir = format!("outfiles/{}", Utc::now());
     fs::create_dir(&out_dir)?;
-    let changes_filename = {
-        let mut buf = out_dir.to_path_buf();
-        buf.push("changes.json");
-        buf
-    };
+    let changes_filename = format!("{}/changes.json", out_dir);
     let mut changes_file = OpenOptions::new()
         .write(true)
         .append(true)
         .create(true)
         .open(changes_filename)
         .unwrap();
-    let original_filename = {
-        let mut buf = out_dir.to_path_buf();
-        buf.push(path.file_name().unwrap());
-        buf
-    };
+    let original_filename = format!("{}/main.rs", out_dir);
     let mut original_file = OpenOptions::new()
         .write(true)
         .append(true)

@@ -1,6 +1,6 @@
 export type ChangeType = "add" | "same" | "remove"
 
-interface ChangeElement {
+export interface ChangeElement {
   content: string,
   type: ChangeType
 }

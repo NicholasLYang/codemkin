@@ -1,4 +1,4 @@
-extern crate chrono;
+extern crate clap;
 extern crate difference;
 extern crate futures;
 extern crate ignore;
@@ -7,15 +7,16 @@ extern crate serde_json;
 extern crate tokio;
 extern crate walkdir;
 
+use clap::{App, AppSettings, Arg, SubCommand};
 use difference::{Changeset, Difference};
 use futures::future::try_join_all;
+use ignore::{DirEntry, Walk};
+use rusqlite::NO_PARAMS;
+use rusqlite::{params, Connection, Result};
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, fs, io};
-use ignore::{Walk, DirEntry};
-use rusqlite::{params, Connection, Result};
-use rusqlite::NO_PARAMS;
 use tokio::time;
 
 fn diffs_to_json(diffs: &Vec<Difference>) -> String {
@@ -37,14 +38,34 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), io::Error> {
-    let args: Vec<String> = env::args().collect();
-    let dir = if args.len() < 2 {
-        env::current_dir()?
+    let matches = App::new("cdmkn")
+        .version("0.1.0")
+        .author("Nicholas Yang")
+        .about("Code montages")
+        .setting(AppSettings::ArgRequiredElseHelp)
+        .subcommand(SubCommand::with_name("serve").about("Serve code changes"))
+        .subcommand(
+            SubCommand::with_name("watch")
+                .about("Watch folder")
+                .arg(Arg::with_name("folder")),
+        )
+        .get_matches();
+    if let Some(watch_matches) = matches.subcommand_matches("watch") {
+        let dir = if let Some(folder_name) = watch_matches.value_of("folder") {
+            let mut p = PathBuf::new();
+            p.push(folder_name);
+            p
+        } else {
+            env::current_dir()?
+        };
+        watch_folder(dir).await?;
     } else {
-        let mut p = PathBuf::new();
-        p.push(&args[1]);
-        p
-    };
+        println!("TODO: Serve changes");
+    }
+    Ok(())
+}
+
+async fn watch_folder(dir: PathBuf) -> Result<(), io::Error> {
     let db_path = {
         let mut db_pathbuf = dir.clone();
         db_pathbuf.push(".cdmkn");
@@ -55,14 +76,20 @@ async fn main() -> Result<(), io::Error> {
     let conn = match Connection::open(db_path) {
         Ok(conn) => conn,
         Err(_) => {
-            return Err(io::Error::new(io::ErrorKind::Other, "Could not connect to db" ))
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Could not connect to db",
+            ))
         }
     };
 
     match initialize_tables(&conn) {
         Ok(()) => (),
         Err(_) => {
-            return Err(io::Error::new(io::ErrorKind::Other, "Could not initialize tables"))
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Could not initialize tables",
+            ))
         }
     };
 
@@ -71,13 +98,18 @@ async fn main() -> Result<(), io::Error> {
     for entry in walker {
         let entry = match entry {
             Ok(e) => e,
-            Err(_) => continue
+            Err(_) => continue,
         };
 
-        if is_file(&entry) {
+        if is_valid_file(&entry) {
             let id = match insert_file(&conn, entry.path()) {
                 Ok(id) => id,
-                Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not insert file into db"))
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Could not insert file into db",
+                    ))
+                }
             };
             futures.push(watch_file(&conn, entry.into_path(), id));
         }
@@ -88,49 +120,74 @@ async fn main() -> Result<(), io::Error> {
 }
 
 fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
-    conn.execute("CREATE TABLE IF NOT EXISTS files (\
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS files (\
                         id integer primary key,\
                         path text not null unique\
                         )",
-     NO_PARAMS
+        NO_PARAMS,
     )?;
-    conn.execute("CREATE TABLE IF NOT EXISTS changes (\
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS changes (\
                         id integer primary key,\
                         file_id text not null,\
                         change_elements text not null\
                         )",
-                 NO_PARAMS
+        NO_PARAMS,
     )?;
     Ok(())
 }
 
-fn is_file(entry: &DirEntry) -> bool {
-    entry.metadata().map(|e| e.is_file()).unwrap_or(false)
+// If is file and is less than 200kb
+// TODO: Figure out better criterion for valid files.
+// Maybe file extensions?
+fn is_valid_file(entry: &DirEntry) -> bool {
+    entry
+        .metadata()
+        .map(|e| e.is_file() && e.len() < 200_000)
+        .unwrap_or(false)
 }
 
-fn insert_file(conn: &Connection, file_path: &Path) -> Result<i64, rusqlite::Error>{
-    conn.execute("INSERT OR IGNORE INTO files (path) VALUES (?1)", &[file_path.to_str().unwrap()])?;
-    let id = conn.query_row("SELECT id FROM files WHERE path = ?1", &[file_path.to_str().unwrap()], |row| row.get(0))?;
+fn insert_file(conn: &Connection, file_path: &Path) -> Result<i64, rusqlite::Error> {
+    conn.execute(
+        "INSERT OR IGNORE INTO files (path) VALUES (?1)",
+        &[file_path.to_str().unwrap()],
+    )?;
+    let id = conn.query_row(
+        "SELECT id FROM files WHERE path = ?1",
+        &[file_path.to_str().unwrap()],
+        |row| row.get(0),
+    )?;
     Ok(id)
 }
 
 async fn watch_file(conn: &Connection, file_path: PathBuf, id: i64) -> Result<(), io::Error> {
     let mut interval = time::interval(Duration::from_millis(500));
-    let mut previous_contents = fs::read_to_string(&file_path)?;
-    println!("WATCHING {:?}", file_path);
+    let mut previous_contents = match fs::read_to_string(&file_path) {
+        Ok(content) => content,
+        Err(_) => {
+            eprintln!("Could not open file: {:?}", file_path);
+            return Ok(());
+        }
+    };
+    println!("Watching file {:?}", file_path);
     loop {
         interval.tick().await;
-        let current_contents = fs::read_to_string(&file_path).expect("Something went wrong");
+        let current_contents = fs::read_to_string(&file_path)?;
         let changeset = Changeset::new(&previous_contents, &current_contents, "\n");
-        println!("{:?}", changeset.diffs);
         if changeset.distance > 0 {
-            println!("DIFF");
             let diffs_str = diffs_to_json(&changeset.diffs);
-            match conn.execute("INSERT INTO changes (file_id, change_elements) VALUES (?1, ?2)", params![id, diffs_str]) {
-                Ok(_) => {
-                    println!("CHANGE INSERTED");
-                },
-                Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not insert changes"))
+            match conn.execute(
+                "INSERT INTO changes (file_id, change_elements) VALUES (?1, ?2)",
+                params![id, diffs_str],
+            ) {
+                Ok(_) => (),
+                Err(_) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        "Could not insert changes",
+                    ))
+                }
             };
         }
         previous_contents = current_contents;

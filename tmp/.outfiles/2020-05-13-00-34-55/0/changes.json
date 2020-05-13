@@ -1,0 +1,4 @@
+[{"content":"The quick brown fox jumps over the lazy dog","type":"same"},{"content":"","type":"remove"},{"content":"D\nR\nM\nR\nS\nP\nV\nA\nN","type":"add"}]
+[{"content":"The quick brown fox jumps over the lazy dog\nD\nR\nM\nR\nS\nP\nV\nA\nN","type":"same"},{"content":"D\nE\nR","type":"add"}]
+[{"content":"The quick brown fox jumps over the lazy dog\nD\nR\nM\nR\nS\nP\nV\nA\nN\nD\nE\nR","type":"same"},{"content":"T\nR\nA\nM\nP","type":"add"}]
+[{"content":"The quick brown fox jumps over the lazy dog","type":"same"},{"content":"D\nR\nM\nR\nS\nP\nV\nA\nN\nD\nE\nR\nT\nR\nA\nM\nP","type":"remove"},{"content":"\nDevenir\nRevenir\nMontrer\nRetourner\nSortir\nPartir\nVenir\nArriver\nNaitre\nDescendre\nEntrer\nRentrer\nTomber\nRester\nAller\nMourir\nPasser","type":"add"}]

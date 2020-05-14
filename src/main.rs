@@ -9,12 +9,13 @@ extern crate walkdir;
 
 use clap::{App, AppSettings, Arg, SubCommand};
 use difference::{Changeset, Difference};
-use futures::future::try_join_all;
 use ignore::{DirEntry, Walk};
 use rusqlite::NO_PARAMS;
 use rusqlite::{params, Connection, Result};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::collections::HashSet;
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fs, io};
 use tokio::time;
@@ -43,7 +44,6 @@ async fn main() -> Result<(), io::Error> {
         .author("Nicholas Yang")
         .about("Code montages")
         .setting(AppSettings::ArgRequiredElseHelp)
-        .subcommand(SubCommand::with_name("serve").about("Serve code changes"))
         .subcommand(
             SubCommand::with_name("watch")
                 .about("Watch folder")
@@ -58,22 +58,21 @@ async fn main() -> Result<(), io::Error> {
         } else {
             env::current_dir()?
         };
-        watch_folder(dir).await?;
-    } else {
-        println!("TODO: Serve changes");
+        init_watch(dir).await?;
     }
     Ok(())
 }
 
-async fn watch_folder(dir: PathBuf) -> Result<(), io::Error> {
+// I have started my watch
+async fn init_watch(dir: PathBuf) -> Result<(), io::Error> {
     let db_path = {
         let mut db_pathbuf = dir.clone();
         db_pathbuf.push(".cdmkn");
         fs::create_dir_all(&db_pathbuf)?;
         db_pathbuf.push("files.db");
-        db_pathbuf
+        Arc::new(db_pathbuf)
     };
-    let conn = match Connection::open(db_path) {
+    let conn = match Connection::open(&*db_path) {
         Ok(conn) => conn,
         Err(_) => {
             return Err(io::Error::new(
@@ -93,30 +92,34 @@ async fn watch_folder(dir: PathBuf) -> Result<(), io::Error> {
         }
     };
 
-    let mut futures = Vec::new();
-    let walker = Walk::new(&dir).into_iter();
-    for entry in walker {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-
-        if is_valid_file(&entry) {
-            let id = match insert_file(&conn, entry.path()) {
-                Ok(id) => id,
-                Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Could not insert file into db",
-                    ))
-                }
+    let mut watched_files = HashSet::new();
+    println!("Listening in directory {}", dir.to_str().unwrap_or(""));
+    loop {
+        let walker = Walk::new(&dir).into_iter();
+        for entry in walker {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
             };
-            futures.push(watch_file(&conn, entry.into_path(), id));
+
+            let is_valid_file = is_valid_file(&entry);
+            let entry_path = Arc::new(entry.into_path());
+            let is_watched = watched_files.contains(&entry_path);
+            if is_valid_file && !is_watched {
+                watched_files.insert(entry_path.clone());
+                let id = match insert_file(&conn, &entry_path) {
+                    Ok(id) => id,
+                    Err(_) => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Could not insert file into db",
+                        ))
+                    }
+                };
+                tokio::spawn(watch_file(db_path.clone(), entry_path.clone(), id));
+            }
         }
     }
-    println!("Listening in directory {}", dir.to_str().unwrap_or(""));
-    try_join_all(futures).await?;
-    Ok(())
 }
 
 fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
@@ -148,7 +151,7 @@ fn is_valid_file(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-fn insert_file(conn: &Connection, file_path: &Path) -> Result<i64, rusqlite::Error> {
+fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64, rusqlite::Error> {
     conn.execute(
         "INSERT OR IGNORE INTO files (path) VALUES (?1)",
         &[file_path.to_str().unwrap()],
@@ -161,9 +164,22 @@ fn insert_file(conn: &Connection, file_path: &Path) -> Result<i64, rusqlite::Err
     Ok(id)
 }
 
-async fn watch_file(conn: &Connection, file_path: PathBuf, id: i64) -> Result<(), io::Error> {
+async fn watch_file(
+    db_path: Arc<PathBuf>,
+    file_path: Arc<PathBuf>,
+    id: i64,
+) -> Result<(), io::Error> {
+    let conn = match Connection::open(&*db_path) {
+        Ok(conn) => conn,
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Could not connect to db",
+            ))
+        }
+    };
     let mut interval = time::interval(Duration::from_millis(500));
-    let mut previous_contents = match fs::read_to_string(&file_path) {
+    let mut previous_contents = match fs::read_to_string(&*file_path) {
         Ok(content) => content,
         Err(_) => {
             eprintln!("Could not open file: {:?}", file_path);
@@ -173,7 +189,7 @@ async fn watch_file(conn: &Connection, file_path: PathBuf, id: i64) -> Result<()
     println!("Watching file {:?}", file_path);
     loop {
         interval.tick().await;
-        let current_contents = fs::read_to_string(&file_path)?;
+        let current_contents = fs::read_to_string(&*file_path)?;
         let changeset = Changeset::new(&previous_contents, &current_contents, "\n");
         if changeset.distance > 0 {
             let diffs_str = diffs_to_json(&changeset.diffs);

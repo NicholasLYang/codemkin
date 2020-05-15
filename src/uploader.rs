@@ -1,32 +1,7 @@
-use crate::TokenCredentials;
+use crate::types::{LoginCredentials, TokenCredentials};
 use reqwest::header::HeaderMap;
-use serde::{Deserialize, Serialize};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, stdout, Write};
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Repository {
-    id: String,
-    name: String,
-    user_id: String,
-}
-
-#[derive(Debug, Serialize)]
-struct LoginCredentials {
-    email: String,
-    password: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-struct User {
-    uid: String,
-    id: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserResponse {
-    data: User,
-}
 
 fn read_line(s: &mut String, prompt: &str) -> Result<(), io::Error> {
     print!("{}", prompt);

@@ -13,42 +13,18 @@ extern crate uuid;
 use clap::{App, AppSettings, Arg, SubCommand};
 use ignore::{DirEntry, Walk};
 use rusqlite::Connection;
-use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::io::{stdout, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, io};
+use types::Config;
 use uploader::login;
-use uuid::Uuid;
 use watcher::{initialize_tables, insert_file, watch_file};
 
+mod types;
 mod uploader;
 mod watcher;
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenCredentials {
-    pub token: String,
-    pub client: String,
-    pub expiry: String,
-    pub token_type: String,
-    pub uid: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct Config {
-    repository_id: String,
-    token_credentials: Option<TokenCredentials>,
-}
-
-impl Config {
-    pub fn new() -> Config {
-        Config {
-            repository_id: Uuid::new_v4().to_string(),
-            token_credentials: None,
-        }
-    }
-}
 
 // If is file and is less than 200kb
 // TODO: Figure out better criterion for valid files.

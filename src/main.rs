@@ -36,9 +36,9 @@ pub fn is_valid_file(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
+fn read_config() -> Result<Config, io::Error> {
     let config_str = fs::read_to_string("./.cdmkn/config.toml")?;
-    let config = toml::from_str(&config_str)?;
+    let config = toml::from_str(&config_str).expect("Could not read .cdmkn/config.toml");
     Ok(config)
 }
 
@@ -65,6 +65,7 @@ async fn main() -> Result<(), io::Error> {
                 .about("Initialize repo")
                 .arg(Arg::with_name("dir")),
         )
+        .subcommand(SubCommand::with_name("push").about("Push repo to server"))
         .get_matches();
     if let Some(watch_matches) = matches.subcommand_matches("watch") {
         let dir = if let Some(folder_name) = watch_matches.value_of("dir") {
@@ -86,11 +87,19 @@ async fn main() -> Result<(), io::Error> {
             env::current_dir()?
         };
         init(dir)?;
+    } else if matches.subcommand_matches("push").is_some() {
+        let config = read_config()?;
+        let _credentials = if let Some(creds) = config.token_credentials {
+            creds
+        } else {
+            login_user().await?.token_credentials.unwrap()
+        };
+        println!("TODO: Implement push");
     }
     Ok(())
 }
 
-async fn login_user() -> Result<(), io::Error> {
+async fn login_user() -> Result<Config, io::Error> {
     let mut config = match read_config() {
         Ok(config) => config,
         Err(_) => {
@@ -114,7 +123,7 @@ async fn login_user() -> Result<(), io::Error> {
             }
             match res.as_str() {
                 "y" => break,
-                "n" => return Ok(()),
+                "n" => return Ok(config),
                 _ => {}
             }
         }
@@ -126,7 +135,7 @@ async fn login_user() -> Result<(), io::Error> {
     config.token_credentials = Some(credentials);
     write_config(&config)?;
     println!("Successfully logged in");
-    Ok(())
+    Ok(config)
 }
 
 fn init(directory: PathBuf) -> Result<(), io::Error> {

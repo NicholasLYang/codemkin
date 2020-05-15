@@ -14,6 +14,7 @@ pub struct TokenCredentials {
 pub struct Config {
     pub repository_id: String,
     pub token_credentials: Option<TokenCredentials>,
+    pub is_pushed: bool,
 }
 
 impl Config {
@@ -21,6 +22,7 @@ impl Config {
         Config {
             repository_id: Uuid::new_v4().to_string(),
             token_credentials: None,
+            is_pushed: false,
         }
     }
 }

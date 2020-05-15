@@ -69,7 +69,7 @@ impl TryFrom<&HeaderMap> for TokenCredentials {
     }
 }
 
-pub async fn login() -> Result<(UserResponse, TokenCredentials), Box<dyn std::error::Error>> {
+pub async fn login() -> Result<TokenCredentials, Box<dyn std::error::Error>> {
     let mut email = String::new();
     let mut password = String::new();
     read_line(&mut email, "Email: ")?;
@@ -84,6 +84,5 @@ pub async fn login() -> Result<(UserResponse, TokenCredentials), Box<dyn std::er
         .await?;
     let headers = resp.headers();
     let credentials: TokenCredentials = headers.try_into()?;
-    let user = resp.json::<UserResponse>().await?;
-    Ok((user, credentials))
+    Ok(credentials)
 }

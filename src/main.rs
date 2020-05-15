@@ -15,6 +15,7 @@ use ignore::{DirEntry, Walk};
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
+use std::io::{stdout, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, io};
@@ -99,22 +100,7 @@ async fn main() -> Result<(), io::Error> {
         };
         init_watch(dir).await?;
     } else if matches.subcommand_matches("login").is_some() {
-        let mut config = match read_config() {
-            Ok(config) => config,
-            Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Could not read config for repository. Did you initialize the repo?",
-                ));
-            }
-        };
-        let (user, credentials) = match login().await {
-            Ok((u, c)) => (u, c),
-            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not login")),
-        };
-        config.token_credentials = Some(credentials);
-        write_config(&config)?;
-        println!("Successfully logged in");
+        login_user().await?;
     } else if let Some(init_matches) = matches.subcommand_matches("init") {
         let dir = if let Some(folder_name) = init_matches.value_of("dir") {
             let mut p = PathBuf::new();
@@ -125,6 +111,45 @@ async fn main() -> Result<(), io::Error> {
         };
         init(dir)?;
     }
+    Ok(())
+}
+
+async fn login_user() -> Result<(), io::Error> {
+    let mut config = match read_config() {
+        Ok(config) => config,
+        Err(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "Could not read config for repository. Did you initialize the repo?",
+            ));
+        }
+    };
+    if config.token_credentials.is_some() {
+        loop {
+            println!("You're already logged in. Do you want to log in again? (y/n)");
+            stdout().flush()?;
+            let mut res = String::new();
+            io::stdin().read_line(&mut res)?;
+            if let Some('\n') = res.chars().next_back() {
+                res.pop();
+            }
+            if let Some('\r') = res.chars().next_back() {
+                res.pop();
+            }
+            match res.as_str() {
+                "y" => break,
+                "n" => return Ok(()),
+                _ => {}
+            }
+        }
+    }
+    let credentials = match login().await {
+        Ok(user) => user,
+        Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not login")),
+    };
+    config.token_credentials = Some(credentials);
+    write_config(&config)?;
+    println!("Successfully logged in");
     Ok(())
 }
 

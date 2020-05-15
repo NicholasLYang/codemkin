@@ -26,14 +26,25 @@ mod uploader;
 mod watcher;
 
 #[derive(Debug, Serialize, Deserialize)]
+pub struct TokenCredentials {
+    pub token: String,
+    pub client: String,
+    pub expiry: String,
+    pub token_type: String,
+    pub uid: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct Config {
     repository_id: String,
+    token_credentials: Option<TokenCredentials>,
 }
 
 impl Config {
     pub fn new() -> Config {
         Config {
             repository_id: Uuid::new_v4().to_string(),
+            token_credentials: None,
         }
     }
 }
@@ -54,8 +65,13 @@ fn read_config() -> Result<Config, Box<dyn std::error::Error>> {
     Ok(config)
 }
 
+fn write_config(config: &Config) -> Result<(), io::Error> {
+    let config_str = toml::to_string(config).unwrap();
+    fs::write("./.cdmkn/config.toml", config_str)
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), io::Error> {
     let matches = App::new("cdmkn")
         .version("0.1.0")
         .author("Nicholas Yang")
@@ -83,7 +99,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         };
         init_watch(dir).await?;
     } else if matches.subcommand_matches("login").is_some() {
-        login().await?;
+        let mut config = match read_config() {
+            Ok(config) => config,
+            Err(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Could not read config for repository. Did you initialize the repo?",
+                ));
+            }
+        };
+        let (user, credentials) = match login().await {
+            Ok((u, c)) => (u, c),
+            Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not login")),
+        };
+        config.token_credentials = Some(credentials);
+        write_config(&config)?;
+        println!("Successfully logged in");
     } else if let Some(init_matches) = matches.subcommand_matches("init") {
         let dir = if let Some(folder_name) = init_matches.value_of("dir") {
             let mut p = PathBuf::new();

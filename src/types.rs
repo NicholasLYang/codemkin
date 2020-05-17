@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TokenCredentials {
@@ -12,26 +11,14 @@ pub struct TokenCredentials {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub repository_id: String,
+    pub id: String,
     pub token_credentials: Option<TokenCredentials>,
-    pub is_pushed: bool,
-}
-
-impl Config {
-    pub fn new() -> Config {
-        Config {
-            repository_id: Uuid::new_v4().to_string(),
-            token_credentials: None,
-            is_pushed: false,
-        }
-    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Repository {
-    id: String,
-    name: String,
-    user_id: String,
+    pub id: String,
+    pub name: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -49,4 +36,30 @@ pub struct User {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserResponse {
     data: User,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct RepositoryRequest {
+    pub name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DocumentRequest<'a> {
+    pub path: &'a str,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Document {
+    pub id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangeRequest<'a> {
+    pub elements: String,
+    pub document_id: &'a str,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct Change {
+    pub created_at: String,
 }

@@ -1,3 +1,4 @@
+// Testing
 function binarySearch(list, value, left = 0, right = list.length - 1) {
     if (value > list[right] || value < list[left]) {
         return -1;

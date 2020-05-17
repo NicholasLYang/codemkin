@@ -1,3 +1,4 @@
+extern crate anyhow;
 extern crate clap;
 extern crate difference;
 extern crate futures;
@@ -10,11 +11,13 @@ extern crate tokio;
 extern crate toml;
 extern crate uuid;
 
+use crate::types::TokenCredentials;
+use crate::uploader::{init_repo, push_repo};
+use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
 use ignore::{DirEntry, Walk};
 use rusqlite::Connection;
 use std::collections::HashSet;
-use std::io::{stdout, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs, io};
@@ -36,19 +39,20 @@ pub fn is_valid_file(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-fn read_config() -> Result<Config, io::Error> {
+fn read_config() -> Result<Config> {
     let config_str = fs::read_to_string("./.cdmkn/config.toml")?;
     let config = toml::from_str(&config_str).expect("Could not read .cdmkn/config.toml");
     Ok(config)
 }
 
-fn write_config(config: &Config) -> Result<(), io::Error> {
+fn write_config(config: &Config) -> Result<()> {
+    println!("{:?}", config);
     let config_str = toml::to_string(config).unwrap();
-    fs::write("./.cdmkn/config.toml", config_str)
+    Ok(fs::write("./.cdmkn/config.toml", config_str)?)
 }
 
 #[tokio::main]
-async fn main() -> Result<(), io::Error> {
+async fn main() -> Result<()> {
     let matches = App::new("cdmkn")
         .version("0.1.0")
         .author("Nicholas Yang")
@@ -77,7 +81,10 @@ async fn main() -> Result<(), io::Error> {
         };
         init_watch(dir).await?;
     } else if matches.subcommand_matches("login").is_some() {
-        login_user().await?;
+        let creds = login_user().await?;
+        let mut config = read_config()?;
+        config.token_credentials = Some(creds);
+        write_config(&config)?;
     } else if let Some(init_matches) = matches.subcommand_matches("init") {
         let dir = if let Some(folder_name) = init_matches.value_of("dir") {
             let mut p = PathBuf::new();
@@ -86,59 +93,42 @@ async fn main() -> Result<(), io::Error> {
         } else {
             env::current_dir()?
         };
-        init(dir)?;
+        init(dir).await?;
     } else if matches.subcommand_matches("push").is_some() {
         let config = read_config()?;
-        let _credentials = if let Some(creds) = config.token_credentials {
+        let credentials = if let Some(creds) = config.token_credentials {
             creds
         } else {
-            login_user().await?.token_credentials.unwrap()
+            login_user().await?
         };
-        println!("TODO: Implement push");
+        let conn = connect_to_db(&env::current_dir()?)?;
+        push_repo(&conn, &config.id, &credentials).await?;
     }
     Ok(())
 }
 
-async fn login_user() -> Result<Config, io::Error> {
-    let mut config = match read_config() {
-        Ok(config) => config,
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Could not read config for repository. Did you initialize the repo?",
-            ));
-        }
+pub fn connect_to_db(dir: &PathBuf) -> Result<Connection> {
+    let db_path = {
+        let mut db_pathbuf = dir.clone();
+        db_pathbuf.push(".cdmkn");
+        fs::create_dir_all(&db_pathbuf)?;
+        db_pathbuf.push("files.db");
+        Arc::new(db_pathbuf)
     };
-    if config.token_credentials.is_some() {
-        loop {
-            println!("You're already logged in. Do you want to log in again? (y/n)");
-            stdout().flush()?;
-            let mut res = String::new();
-            io::stdin().read_line(&mut res)?;
-            if let Some('\n') = res.chars().next_back() {
-                res.pop();
-            }
-            if let Some('\r') = res.chars().next_back() {
-                res.pop();
-            }
-            match res.as_str() {
-                "y" => break,
-                "n" => return Ok(config),
-                _ => {}
-            }
-        }
+    match Connection::open(&*db_path) {
+        Ok(conn) => Ok(conn),
+        Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Could not connect to db").into()),
     }
-    let credentials = match login().await {
-        Ok(user) => user,
-        Err(_) => return Err(io::Error::new(io::ErrorKind::Other, "Could not login")),
-    };
-    config.token_credentials = Some(credentials);
-    write_config(&config)?;
-    println!("Successfully logged in");
-    Ok(config)
 }
 
-fn init(directory: PathBuf) -> Result<(), io::Error> {
+async fn login_user() -> Result<TokenCredentials> {
+    println!("Please login");
+    let credentials = login().await?;
+    println!("Successfully logged in");
+    Ok(credentials)
+}
+
+async fn init(directory: PathBuf) -> Result<()> {
     let mut directory = directory;
     directory.push(".cdmkn");
     fs::create_dir_all(&directory)?;
@@ -148,9 +138,16 @@ fn init(directory: PathBuf) -> Result<(), io::Error> {
         dir
     };
     if config_path.exists() {
+        // TODO: Add some sort of validation to check if config
+        // is actually valid
         println!("Config already exists, skipping...");
     } else {
-        let config = Config::new();
+        let credentials = login_user().await?;
+        let (creds, repo) = init_repo(&credentials).await?;
+        let config = Config {
+            id: repo.id,
+            token_credentials: Some(creds),
+        };
         fs::write(config_path, toml::to_string(&config).unwrap())?;
     }
     let db_path = {
@@ -161,13 +158,13 @@ fn init(directory: PathBuf) -> Result<(), io::Error> {
     if db_path.exists() {
         println!("Database already exists, skipping...");
     } else {
-        match Connection::open(&db_path) {
-            Ok(conn) => conn,
+        let conn = connect_to_db(&directory)?;
+        match initialize_tables(&conn) {
+            Ok(()) => (),
             Err(_) => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Could not create database",
-                ))
+                return Err(
+                    io::Error::new(io::ErrorKind::Other, "Could not initialize tables").into(),
+                )
             }
         };
     }
@@ -179,33 +176,8 @@ fn init(directory: PathBuf) -> Result<(), io::Error> {
 }
 
 // I have started my watch
-async fn init_watch(dir: PathBuf) -> Result<(), io::Error> {
-    let db_path = {
-        let mut db_pathbuf = dir.clone();
-        db_pathbuf.push(".cdmkn");
-        fs::create_dir_all(&db_pathbuf)?;
-        db_pathbuf.push("files.db");
-        Arc::new(db_pathbuf)
-    };
-    let conn = match Connection::open(&*db_path) {
-        Ok(conn) => conn,
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Could not connect to db",
-            ))
-        }
-    };
-
-    match initialize_tables(&conn) {
-        Ok(()) => (),
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Could not initialize tables",
-            ))
-        }
-    };
+async fn init_watch(dir: PathBuf) -> Result<()> {
+    let conn = connect_to_db(&dir)?;
 
     let mut watched_files = HashSet::new();
     println!("Listening in directory {}", dir.to_str().unwrap_or(""));
@@ -228,10 +200,11 @@ async fn init_watch(dir: PathBuf) -> Result<(), io::Error> {
                         return Err(io::Error::new(
                             io::ErrorKind::Other,
                             "Could not insert file into db",
-                        ))
+                        )
+                        .into())
                     }
                 };
-                tokio::spawn(watch_file(db_path.clone(), entry_path.clone(), id));
+                tokio::spawn(watch_file(dir.clone(), entry_path.clone(), id));
             }
         }
     }

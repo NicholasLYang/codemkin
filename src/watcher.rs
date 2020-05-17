@@ -1,6 +1,8 @@
+use crate::connect_to_db;
+use anyhow::Result;
 use difference::{Changeset, Difference};
 use rusqlite::NO_PARAMS;
-use rusqlite::{params, Connection, Result};
+use rusqlite::{params, Connection};
 use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +29,7 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
 
 pub fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS files (\
+        "CREATE TABLE IF NOT EXISTS documents (\
                         id integer primary key,\
                         path text not null unique\
                         )",
@@ -36,8 +38,9 @@ pub fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "CREATE TABLE IF NOT EXISTS changes (\
                         id integer primary key,\
-                        file_id text not null,\
-                        change_elements text not null\
+                        document_id text not null,\
+                        change_elements text not null,\
+                        created_at DATE DEFAULT (datetime('now','utc'))
                         )",
         NO_PARAMS,
     )?;
@@ -46,31 +49,19 @@ pub fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
 
 pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64, rusqlite::Error> {
     conn.execute(
-        "INSERT OR IGNORE INTO files (path) VALUES (?1)",
+        "INSERT OR IGNORE INTO documents (path) VALUES (?1)",
         &[file_path.to_str().unwrap()],
     )?;
     let id = conn.query_row(
-        "SELECT id FROM files WHERE path = ?1",
+        "SELECT id FROM documents WHERE path = ?1",
         &[file_path.to_str().unwrap()],
         |row| row.get(0),
     )?;
     Ok(id)
 }
 
-pub async fn watch_file(
-    db_path: Arc<PathBuf>,
-    file_path: Arc<PathBuf>,
-    id: i64,
-) -> Result<(), io::Error> {
-    let conn = match Connection::open(&*db_path) {
-        Ok(conn) => conn,
-        Err(_) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "Could not connect to db",
-            ))
-        }
-    };
+pub async fn watch_file(dir_path: PathBuf, file_path: Arc<PathBuf>, id: i64) -> Result<()> {
+    let conn = connect_to_db(&dir_path)?;
     let mut interval = time::interval(Duration::from_millis(500));
     let mut previous_contents = match fs::read_to_string(&*file_path) {
         Ok(content) => content,
@@ -87,15 +78,14 @@ pub async fn watch_file(
         if changeset.distance > 0 {
             let diffs_str = diffs_to_json(&changeset.diffs);
             match conn.execute(
-                "INSERT INTO changes (file_id, change_elements) VALUES (?1, ?2)",
+                "INSERT INTO changes (document_id, change_elements) VALUES (?1, ?2)",
                 params![id, diffs_str],
             ) {
                 Ok(_) => (),
                 Err(_) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        "Could not insert changes",
-                    ))
+                    return Err(
+                        io::Error::new(io::ErrorKind::Other, "Could not insert changes").into(),
+                    )
                 }
             };
         }

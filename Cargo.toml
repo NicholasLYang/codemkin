@@ -15,6 +15,8 @@ ignore = "0.4.15"
 rusqlite = "0.23.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
+termion = "1.5"
 tokio = { version = "0.2", features = ["full"] }
 toml = "0.5.6"
+tui = "0.9"
 reqwest = { version = "0.10", features = ["json"] }

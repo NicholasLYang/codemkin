@@ -20,6 +20,11 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{env, fs, io};
+use termion::raw::IntoRawMode;
+use tui::backend::TermionBackend;
+use tui::style::{Color, Modifier, Style};
+use tui::widgets::{Block, Borders, List, Text};
+use tui::Terminal;
 use types::Config;
 use watcher::{initialize_tables, insert_file, watch_file};
 
@@ -80,6 +85,9 @@ async fn main() -> Result<()> {
                 .arg(Arg::with_name("file").required(true)),
         )
         .get_matches();
+    let stdout = io::stdout().into_raw_mode()?;
+    let backend = TermionBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
     if let Some(watch_matches) = matches.subcommand_matches("watch") {
         let folder = watch_matches.value_of("dir").unwrap_or(".");
         let mut dir = PathBuf::new();
@@ -111,7 +119,19 @@ async fn main() -> Result<()> {
         let conn = connect_to_db(&env::current_dir()?)?;
         push_repo(&conn, &config.id, &credentials).await?;
     } else if let Some(init_matches) = matches.subcommand_matches("history") {
-        let path = init_matches.value_of("file").unwrap();
+        print!("\x1B[2J");
+        loop {
+            terminal.draw(|mut f| {
+                let size = f.size();
+                let items = ["Item 1", "Item 2", "Item 3"].iter().map(|i| Text::raw(*i));
+                let list = List::new(items)
+                    .block(Block::default().title("List").borders(Borders::ALL))
+                    .style(Style::default().fg(Color::White))
+                    .highlight_style(Style::default().modifier(Modifier::ITALIC))
+                    .highlight_symbol(">>");
+                f.render_widget(list, size);
+            })?;
+        }
     } else if matches.subcommand_matches("register").is_some() {
         let creds = register().await?;
         if let Ok(config) = read_config() {

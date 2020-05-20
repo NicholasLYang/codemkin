@@ -9,6 +9,16 @@ use rusqlite::{params, Connection, NO_PARAMS};
 use std::convert::{TryFrom, TryInto};
 use std::io::{self, stdout, Write};
 
+#[cfg(debug_assertions)]
+const fn get_api_url() -> &'static str {
+    "http://localhost:3000"
+}
+
+#[cfg(not(debug_assertions))]
+const fn get_api_url() -> &'static str {
+    "https://api.getsesh.io"
+}
+
 fn read_line(s: &mut String, prompt: &str) -> Result<()> {
     print!("{}", prompt);
     stdout().flush()?;
@@ -51,21 +61,42 @@ impl TryFrom<&HeaderMap> for TokenCredentials {
 }
 
 pub async fn login() -> Result<TokenCredentials> {
-    let mut email = String::new();
-    let mut password = String::new();
-    read_line(&mut email, "Email: ")?;
-    read_line(&mut password, "Password: ")?;
+    login_or_register(format!("{}/auth/sign_in", get_api_url())).await
+}
 
-    let credentials = LoginCredentials { email, password };
-    let client = reqwest::Client::new();
-    let resp = client
-        .post("http://localhost:3000/auth/sign_in")
-        .json(&credentials)
-        .send()
-        .await?;
-    let headers = resp.headers();
-    let credentials: TokenCredentials = headers.try_into()?;
-    Ok(credentials)
+pub async fn register() -> Result<TokenCredentials> {
+    login_or_register(format!("{}/auth", get_api_url())).await
+}
+
+// Turns out the flow for logging in or registering is basically
+// the same.
+async fn login_or_register(request_url: String) -> Result<TokenCredentials> {
+    let mut error_retries: u8 = 0;
+    loop {
+        let mut email = String::new();
+        let mut password = String::new();
+        read_line(&mut email, "Email: ")?;
+        read_line(&mut password, "Password: ")?;
+
+        let credentials = LoginCredentials { email, password };
+        let client = reqwest::Client::new();
+        let resp = client.post(&request_url).json(&credentials).send().await?;
+        if resp.status().is_success() {
+            let headers = resp.headers();
+            let credentials: TokenCredentials = headers.try_into()?;
+            return Ok(credentials);
+        } else {
+            error_retries += 1;
+            println!("Failed to login, please try again");
+            if cfg!(debug_assertions) {
+                println!("{:?}", resp);
+            }
+            if error_retries == 5 {
+                println!("Uh oh! You seem to be having trouble logging in. Contact nick@nicholasyang.com for help");
+                return Err(io::Error::new(io::ErrorKind::Other, "Could not log in").into());
+            }
+        }
+    }
 }
 
 struct DocumentRow(i64, String);
@@ -77,7 +108,7 @@ async fn push_document(
     credentials: &TokenCredentials,
 ) -> Result<()> {
     let client = reqwest::Client::new();
-    let create_url = format!("http://localhost:3000/repositories/{}/documents", repo_id);
+    let create_url = format!("{}/repositories/{}/documents", get_api_url(), repo_id);
     let payload = DocumentRequest { path: &doc.1 };
     let resp = client
         .post(&create_url)
@@ -87,8 +118,10 @@ async fn push_document(
         .await?;
     let document_response = resp.json::<Document>().await?;
     let url = format!(
-        "http://localhost:3000/repositories/{}/documents/{}/last-change",
-        repo_id, document_response.id
+        "{}/repositories/{}/documents/{}/last-change",
+        get_api_url(),
+        repo_id,
+        document_response.id
     );
     let resp = client
         .get(&url)
@@ -96,7 +129,8 @@ async fn push_document(
         .send()
         .await?;
     let change_url = format!(
-        "http://localhost:3000/documents/{}/changes",
+        "{}/documents/{}/changes",
+        get_api_url(),
         document_response.id
     );
     let mut change_requests = Vec::new();
@@ -195,7 +229,7 @@ pub async fn init_repo(credentials: &TokenCredentials) -> Result<(TokenCredentia
     let data = RepositoryRequest { name };
     let headers = make_auth_headers(credentials);
     let resp = client
-        .post("http://localhost:3000/repositories")
+        .post(&format!("{}/repositories", get_api_url()))
         .headers(headers)
         .json(&data)
         .send()

@@ -60,9 +60,10 @@ pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64, r
     Ok(id)
 }
 
-pub async fn watch_file(dir_path: PathBuf, file_path: Arc<PathBuf>, id: i64) -> Result<()> {
-    let conn = connect_to_db(&dir_path)?;
-    let mut interval = time::interval(Duration::from_millis(500));
+pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64) -> Result<()> {
+    let conn = connect_to_db(&*dir_path)?;
+    let mut interval = time::interval(Duration::from_millis(1000));
+    let mut last_modified = file_path.metadata()?.modified()?;
     let mut previous_contents = match fs::read_to_string(&*file_path) {
         Ok(content) => content,
         Err(_) => {
@@ -73,6 +74,14 @@ pub async fn watch_file(dir_path: PathBuf, file_path: Arc<PathBuf>, id: i64) -> 
     println!("Watching file {:?}", file_path);
     loop {
         interval.tick().await;
+        let metadata = (&*file_path).metadata()?;
+        // If the last modified date still matches, we don't do anything
+        let modified = metadata.modified()?;
+        if modified == last_modified {
+            continue;
+        } else {
+            last_modified = modified;
+        }
         let current_contents = fs::read_to_string(&*file_path)?;
         let changeset = Changeset::new(&previous_contents, &current_contents, "\n");
         if changeset.distance > 0 {

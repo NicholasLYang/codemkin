@@ -19,7 +19,7 @@ const fn get_api_url() -> &'static str {
     "https://api.getsesh.io"
 }
 
-fn read_line(s: &mut String, prompt: &str) -> Result<()> {
+pub fn read_line(s: &mut String, prompt: &str) -> Result<()> {
     print!("{}", prompt);
     stdout().flush()?;
     io::stdin().read_line(s)?;
@@ -224,7 +224,9 @@ pub fn make_auth_headers(credentials: &TokenCredentials) -> HeaderMap {
 
 pub async fn create_repo(credentials: &TokenCredentials, name: &str) -> Result<Repository> {
     let client = reqwest::Client::new();
-    let data = RepositoryRequest { name };
+    let data = RepositoryRequest {
+        name: name.to_string(),
+    };
     let headers = make_auth_headers(credentials);
     let resp = client
         .post(&format!("{}/repositories", get_api_url()))

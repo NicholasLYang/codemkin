@@ -23,11 +23,9 @@ use std::sync::Arc;
 use std::{env, fs, io};
 use termion::raw::IntoRawMode;
 use tui::backend::TermionBackend;
-use tui::style::{Color, Modifier, Style};
-use tui::widgets::{Block, Borders, List, Text};
 use tui::Terminal;
 use types::InternalConfig;
-use watcher::{initialize_tables, insert_file, watch_file};
+use watcher::{insert_file, watch_file};
 
 mod init;
 mod types;

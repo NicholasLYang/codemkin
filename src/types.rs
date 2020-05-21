@@ -64,4 +64,15 @@ pub struct Change {
     pub created_at: String,
 }
 
-pub struct UserConfig {}
+#[derive(Debug, Serialize, Deserialize)]
+pub struct UserConfig {
+    pub patterns: Vec<String>,
+}
+
+impl UserConfig {
+    pub fn new() -> Self {
+        UserConfig {
+            patterns: Vec::new(),
+        }
+    }
+}

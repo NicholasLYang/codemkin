@@ -7,10 +7,11 @@ extern crate reqwest;
 extern crate rusqlite;
 extern crate serde;
 extern crate serde_json;
+extern crate thiserror;
 extern crate tokio;
 extern crate toml;
 
-use crate::types::TokenCredentials;
+use crate::types::{TokenCredentials, UserConfig};
 use crate::uploader::{create_repo, login, push_repo, register};
 use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
@@ -20,8 +21,9 @@ use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::{env, fs, io};
+use std::{env, fs, io, process};
 use termion::raw::IntoRawMode;
+use thiserror::Error;
 use tui::backend::TermionBackend;
 use tui::Terminal;
 use types::InternalConfig;
@@ -31,6 +33,14 @@ mod init;
 mod types;
 mod uploader;
 mod watcher;
+
+#[derive(Error, Debug)]
+pub enum CodemkinError {
+    #[error("Invalid configuration. Did you initialize?")]
+    InvalidCdmknFolder,
+    #[error("Codemkin is already running on pid {pid}")]
+    CdmknAlreadyRunning { pid: u32 },
+}
 
 // If is file and is less than 200kb
 // TODO: Figure out better criterion for valid files.
@@ -42,15 +52,47 @@ pub fn is_valid_file(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-fn read_config() -> Result<InternalConfig> {
+fn read_internal_config() -> Result<Option<InternalConfig>> {
     let config_path = Path::new("./.cdmkn/config.toml");
     if !config_path.exists() {
-        eprintln!("Config doesn't exist. Did you initialize?");
-        return Err(io::Error::new(io::ErrorKind::NotFound, "Could not find config").into());
+        return Ok(None);
     }
     let config_str = fs::read_to_string(&config_path)?;
-    let config = toml::from_str(&config_str).expect("Could not read .cdmkn/config.toml");
-    Ok(config)
+    let config = toml::from_str(&config_str)?;
+    Ok(Some(config))
+}
+
+fn read_user_config() -> Result<Option<UserConfig>> {
+    let config_path = Path::new("./cdmkn.toml");
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    let config_str = fs::read_to_string(&config_path)?;
+    let config = toml::from_str(&config_str)?;
+    Ok(Some(config))
+}
+
+fn read_pid_file() -> Result<Option<u32>> {
+    let pid_path = Path::new("./.cdmkn/watcher.pid");
+    if !pid_path.exists() {
+        return Ok(None);
+    }
+    Ok(Some(fs::read_to_string(&pid_path)?.parse::<u32>()?))
+}
+
+fn write_pid_file(pid: u32) -> Result<()> {
+    let pid_path = Path::new("./.cdmkn/watcher.pid");
+    Ok(fs::write(pid_path, format!("{}", pid))?)
+}
+
+fn print_status() -> Result<()> {
+    let pid = read_pid_file()?;
+    if let Some(pid) = pid {
+        println!("Codemkin is watching this directory on pid {}", pid);
+    } else {
+        println!("Codemkin is not watching this directory");
+    }
+    Ok(())
 }
 
 fn write_config(config: &InternalConfig) -> Result<()> {
@@ -66,6 +108,7 @@ async fn main() -> Result<()> {
         .author("Nicholas Yang")
         .about("Code montages")
         .setting(AppSettings::ArgRequiredElseHelp)
+        .setting(AppSettings::ColoredHelp)
         .subcommand(
             SubCommand::with_name("watch")
                 .about("Watch folder")
@@ -84,10 +127,9 @@ async fn main() -> Result<()> {
                 .about("See history for a file")
                 .arg(Arg::with_name("file").required(true)),
         )
+        .subcommand(SubCommand::with_name("status").about("See current status for codemkin"))
         .get_matches();
-    let stdout = io::stdout().into_raw_mode()?;
-    let backend = TermionBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
+
     if let Some(watch_matches) = matches.subcommand_matches("watch") {
         let folder = watch_matches.value_of("dir").unwrap_or(".");
         let mut dir = PathBuf::new();
@@ -95,7 +137,7 @@ async fn main() -> Result<()> {
         init_watch(Arc::new(dir)).await?;
     } else if matches.subcommand_matches("login").is_some() {
         let creds = login_user().await?;
-        let mut config = read_config()?;
+        let mut config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
         config.token_credentials = Some(creds);
         write_config(&config)?;
     } else if let Some(init_matches) = matches.subcommand_matches("init") {
@@ -110,7 +152,7 @@ async fn main() -> Result<()> {
         };
         init(dir).await?;
     } else if matches.subcommand_matches("push").is_some() {
-        let config = read_config()?;
+        let config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
         let credentials = if let Some(creds) = config.token_credentials {
             creds
         } else {
@@ -123,11 +165,15 @@ async fn main() -> Result<()> {
         loop {}
     } else if matches.subcommand_matches("register").is_some() {
         let creds = register().await?;
-        if let Ok(config) = read_config() {
-            let mut config = config;
-            config.token_credentials = Some(creds);
-            write_config(&config)?;
+        let mut config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
+        config.token_credentials = Some(creds);
+        write_config(&config)?;
+    } else if matches.subcommand_matches("status").is_some() {
+        let dir_path = Path::new("./.cdmkn");
+        if !dir_path.exists() {
+            println!("Codemkin is not initialized in this directory")
         }
+        print_status()?;
     }
     Ok(())
 }
@@ -155,8 +201,16 @@ async fn login_user() -> Result<TokenCredentials> {
 
 // I have started my watch
 async fn init_watch(dir: Arc<PathBuf>) -> Result<()> {
-    let conn = connect_to_db(&*dir)?;
+    // NOTE: This is a (not-so) subtle race condition where
+    // in between reading and writing the pid file another process
+    // could spin up. I'm not going to worry about that right now.
+    if let Some(pid) = read_pid_file()? {
+        return Err(CodemkinError::CdmknAlreadyRunning { pid }.into());
+    }
+    let pid = process::id();
+    write_pid_file(pid)?;
 
+    let conn = connect_to_db(&*dir)?;
     let mut watched_files = HashSet::new();
     println!(
         "Listening in directory {}",

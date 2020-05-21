@@ -62,7 +62,7 @@ pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64, r
 
 pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64) -> Result<()> {
     let conn = connect_to_db(&*dir_path)?;
-    let mut interval = time::interval(Duration::from_millis(1000));
+    let mut interval = time::interval(Duration::from_millis(10000));
     let mut last_modified = file_path.metadata()?.modified()?;
     let mut previous_contents = match fs::read_to_string(&*file_path) {
         Ok(content) => content,
@@ -97,7 +97,7 @@ pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64
                     )
                 }
             };
+            previous_contents = current_contents;
         }
-        previous_contents = current_contents;
     }
 }

@@ -67,12 +67,14 @@ pub struct Change {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct UserConfig {
     pub patterns: Vec<String>,
+    pub interval_time: u64,
 }
 
 impl UserConfig {
     pub fn new() -> Self {
         UserConfig {
             patterns: Vec::new(),
+            interval_time: 10_000,
         }
     }
 }

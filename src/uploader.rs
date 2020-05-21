@@ -222,10 +222,8 @@ pub fn make_auth_headers(credentials: &TokenCredentials) -> HeaderMap {
     headers
 }
 
-pub async fn init_repo(credentials: &TokenCredentials) -> Result<(TokenCredentials, Repository)> {
+pub async fn create_repo(credentials: &TokenCredentials, name: &str) -> Result<Repository> {
     let client = reqwest::Client::new();
-    let mut name = String::new();
-    read_line(&mut name, "Repo name: ")?;
     let data = RepositoryRequest { name };
     let headers = make_auth_headers(credentials);
     let resp = client
@@ -234,7 +232,6 @@ pub async fn init_repo(credentials: &TokenCredentials) -> Result<(TokenCredentia
         .json(&data)
         .send()
         .await?;
-    let creds: TokenCredentials = resp.headers().try_into()?;
     let repository = resp.json::<Repository>().await?;
-    Ok((creds, repository))
+    Ok(repository)
 }

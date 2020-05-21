@@ -10,7 +10,7 @@ pub struct TokenCredentials {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct Config {
+pub struct InternalConfig {
     pub id: String,
     pub token_credentials: Option<TokenCredentials>,
 }
@@ -63,3 +63,5 @@ pub struct ChangeRequest<'a> {
 pub struct Change {
     pub created_at: String,
 }
+
+pub struct UserConfig {}

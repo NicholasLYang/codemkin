@@ -11,10 +11,11 @@ extern crate tokio;
 extern crate toml;
 
 use crate::types::TokenCredentials;
-use crate::uploader::{init_repo, login, push_repo, register};
+use crate::uploader::{create_repo, login, push_repo, register};
 use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
 use ignore::{DirEntry, Walk};
+use init::init;
 use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -25,9 +26,10 @@ use tui::backend::TermionBackend;
 use tui::style::{Color, Modifier, Style};
 use tui::widgets::{Block, Borders, List, Text};
 use tui::Terminal;
-use types::Config;
+use types::InternalConfig;
 use watcher::{initialize_tables, insert_file, watch_file};
 
+mod init;
 mod types;
 mod uploader;
 mod watcher;
@@ -42,7 +44,7 @@ pub fn is_valid_file(entry: &DirEntry) -> bool {
         .unwrap_or(false)
 }
 
-fn read_config() -> Result<Config> {
+fn read_config() -> Result<InternalConfig> {
     let config_path = Path::new("./.cdmkn/config.toml");
     if !config_path.exists() {
         eprintln!("Config doesn't exist. Did you initialize?");
@@ -53,7 +55,7 @@ fn read_config() -> Result<Config> {
     Ok(config)
 }
 
-fn write_config(config: &Config) -> Result<()> {
+fn write_config(config: &InternalConfig) -> Result<()> {
     println!("{:?}", config);
     let config_str = toml::to_string(config).unwrap();
     Ok(fs::write("./.cdmkn/config.toml", config_str)?)
@@ -120,18 +122,7 @@ async fn main() -> Result<()> {
         push_repo(&conn, &config.id, &credentials).await?;
     } else if let Some(init_matches) = matches.subcommand_matches("history") {
         print!("\x1B[2J");
-        loop {
-            terminal.draw(|mut f| {
-                let size = f.size();
-                let items = ["Item 1", "Item 2", "Item 3"].iter().map(|i| Text::raw(*i));
-                let list = List::new(items)
-                    .block(Block::default().title("List").borders(Borders::ALL))
-                    .style(Style::default().fg(Color::White))
-                    .highlight_style(Style::default().modifier(Modifier::ITALIC))
-                    .highlight_symbol(">>");
-                f.render_widget(list, size);
-            })?;
-        }
+        loop {}
     } else if matches.subcommand_matches("register").is_some() {
         let creds = register().await?;
         if let Ok(config) = read_config() {
@@ -162,53 +153,6 @@ async fn login_user() -> Result<TokenCredentials> {
     let credentials = login().await?;
     println!("Successfully logged in");
     Ok(credentials)
-}
-
-async fn init(directory: PathBuf) -> Result<()> {
-    let mut cdmkn_dir = directory.clone();
-    cdmkn_dir.push(".cdmkn");
-    fs::create_dir_all(&cdmkn_dir)?;
-    let config_path = {
-        let mut dir = cdmkn_dir.clone();
-        dir.push("config.toml");
-        dir
-    };
-    if config_path.exists() {
-        // TODO: Add some sort of validation to check if config
-        // is actually valid
-        println!("Config already exists, skipping...");
-    } else {
-        let credentials = login_user().await?;
-        let (creds, repo) = init_repo(&credentials).await?;
-        let config = Config {
-            id: repo.id,
-            token_credentials: Some(creds),
-        };
-        fs::write(config_path, toml::to_string(&config).unwrap())?;
-    }
-    let db_path = {
-        let mut dir = cdmkn_dir.clone();
-        dir.push("files.db");
-        dir
-    };
-    if db_path.exists() {
-        println!("Database already exists, skipping...");
-    } else {
-        let conn = connect_to_db(&directory)?;
-        match initialize_tables(&conn) {
-            Ok(()) => (),
-            Err(_) => {
-                return Err(
-                    io::Error::new(io::ErrorKind::Other, "Could not initialize tables").into(),
-                )
-            }
-        };
-    }
-    println!(
-        "Sucessfully initialized in directory {}",
-        directory.to_str().unwrap()
-    );
-    Ok(())
 }
 
 // I have started my watch

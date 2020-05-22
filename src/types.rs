@@ -1,3 +1,4 @@
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -57,6 +58,7 @@ pub struct Document {
 pub struct ChangeRequest<'a> {
     pub elements: String,
     pub document_id: &'a str,
+    pub created_at: chrono::DateTime<Utc>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

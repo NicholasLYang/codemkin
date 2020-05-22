@@ -134,20 +134,20 @@ async fn push_document(
         document_response.id
     );
     let mut change_requests = Vec::new();
+    // Yeah yeah this is some dumbass duplication but it's due to Rust's typechecker complaining
     if let Some(last_change) = resp.json::<Option<Change>>().await? {
         let mut query = conn.prepare(
-            "SELECT change_elements FROM changes WHERE created_at > ?1 AND document_id = ?2",
+            "SELECT change_elements, created_at FROM changes WHERE created_at > ?1 AND document_id = ?2",
         )?;
-        let changes =
-            query.query_map(
-                params![last_change.created_at, doc.0],
-                |row| Ok(row.get(0)?),
-            )?;
+        let changes = query.query_map(params![last_change.created_at, doc.0], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?;
         for change in changes {
-            let change = change?;
+            let (elements, created_at) = change?;
             let payload = ChangeRequest {
-                elements: change,
+                elements,
                 document_id: &document_response.id,
+                created_at,
             };
 
             change_requests.push(
@@ -160,13 +160,14 @@ async fn push_document(
         }
     } else {
         let mut query =
-            conn.prepare("SELECT change_elements FROM changes WHERE document_id = ?1")?;
-        let changes = query.query_map(params![doc.0], |row| Ok(row.get(0)?))?;
+            conn.prepare("SELECT change_elements, created_at FROM changes WHERE document_id = ?1")?;
+        let changes = query.query_map(params![doc.0], |row| Ok((row.get(0)?, row.get(1)?)))?;
         for change in changes {
-            let change = change?;
+            let (elements, created_at) = change?;
             let payload = ChangeRequest {
-                elements: change,
+                elements,
                 document_id: &document_response.id,
+                created_at,
             };
             change_requests.push(
                 client

@@ -1,6 +1,6 @@
 use crate::types::{
-    Change, ChangeRequest, Document, DocumentRequest, LoginCredentials, Repository,
-    RepositoryRequest, TokenCredentials,
+    BulkChangeRequest, Change, ChangeRequest, Document, DocumentRequest, LoginCredentials,
+    Repository, RepositoryRequest, TokenCredentials,
 };
 use anyhow::Result;
 use futures::future::try_join_all;
@@ -144,19 +144,13 @@ async fn push_document(
         })?;
         for change in changes {
             let (elements, created_at) = change?;
-            let payload = ChangeRequest {
+            let req = ChangeRequest {
                 elements,
-                document_id: &document_response.id,
+                document_id: document_response.id.clone(),
                 created_at,
             };
 
-            change_requests.push(
-                client
-                    .post(&change_url)
-                    .json(&payload)
-                    .headers(make_auth_headers(credentials))
-                    .send(),
-            );
+            change_requests.push(req);
         }
     } else {
         let mut query =
@@ -164,18 +158,12 @@ async fn push_document(
         let changes = query.query_map(params![doc.0], |row| Ok((row.get(0)?, row.get(1)?)))?;
         for change in changes {
             let (elements, created_at) = change?;
-            let payload = ChangeRequest {
+            let req = ChangeRequest {
                 elements,
-                document_id: &document_response.id,
+                document_id: document_response.id.clone(),
                 created_at,
             };
-            change_requests.push(
-                client
-                    .post(&change_url)
-                    .json(&payload)
-                    .headers(make_auth_headers(credentials))
-                    .send(),
-            );
+            change_requests.push(req);
         }
     }
     if change_requests.len() > 0 {
@@ -184,8 +172,15 @@ async fn push_document(
             change_requests.len(),
             &doc.1
         );
+        client
+            .post(&change_url)
+            .json(&BulkChangeRequest {
+                changes: change_requests,
+            })
+            .headers(make_auth_headers(credentials))
+            .send()
+            .await?;
     }
-    try_join_all(change_requests).await?;
     Ok(())
 }
 

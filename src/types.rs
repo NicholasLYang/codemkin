@@ -55,10 +55,15 @@ pub struct Document {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ChangeRequest<'a> {
+pub struct ChangeRequest {
     pub elements: String,
-    pub document_id: &'a str,
+    pub document_id: String,
     pub created_at: chrono::DateTime<Utc>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BulkChangeRequest {
+    pub changes: Vec<ChangeRequest>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

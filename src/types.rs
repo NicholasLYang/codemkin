@@ -69,7 +69,7 @@ pub struct BulkChangeRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
-    pub created_at: String,
+    pub created_at: chrono::DateTime<Utc>,
     pub change_elements: Vec<ChangeElement>,
 }
 

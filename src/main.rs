@@ -13,8 +13,9 @@ extern crate thiserror;
 extern crate tokio;
 extern crate toml;
 
+use crate::history::display_file_history;
 use crate::types::{TokenCredentials, UserConfig};
-use crate::uploader::{create_repo, login, push_repo, register};
+use crate::uploader::{login, push_repo, register};
 use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
 use ctrlc::set_handler;
@@ -180,10 +181,7 @@ async fn main() -> Result<()> {
         push_repo(&conn, &config.id, &credentials).await?;
     } else if let Some(history_matches) = matches.subcommand_matches("history") {
         if let Some(file_path) = history_matches.value_of("file") {
-            print!("\x1B[2J");
-            let file_contents = fs::read_to_string(file_path)?;
-            println!("{}", file_contents);
-            loop {}
+            display_file_history(Path::new(file_path), &connect_to_db(Path::new("."))?)?;
         }
     } else if matches.subcommand_matches("register").is_some() {
         let creds = register().await?;
@@ -200,9 +198,9 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-pub fn connect_to_db(dir: &PathBuf) -> Result<Connection> {
+pub fn connect_to_db(dir: &Path) -> Result<Connection> {
     let db_path = {
-        let mut db_pathbuf = dir.clone();
+        let mut db_pathbuf = dir.to_path_buf();
         db_pathbuf.push(".cdmkn");
         fs::create_dir_all(&db_pathbuf)?;
         db_pathbuf.push("files.db");

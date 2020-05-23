@@ -1,4 +1,5 @@
 use chrono::Utc;
+use difference::Difference;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -69,6 +70,41 @@ pub struct BulkChangeRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Change {
     pub created_at: String,
+    pub change_elements: Vec<ChangeElement>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ChangeElement {
+    #[serde(rename = "type")]
+    pub type_: ChangeType,
+    pub content: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ChangeType {
+    Same,
+    Add,
+    Remove,
+}
+
+impl From<Difference> for ChangeElement {
+    fn from(diff: Difference) -> Self {
+        match diff {
+            Difference::Same(s) => ChangeElement {
+                type_: ChangeType::Same,
+                content: s,
+            },
+            Difference::Rem(s) => ChangeElement {
+                type_: ChangeType::Remove,
+                content: s,
+            },
+            Difference::Add(s) => ChangeElement {
+                type_: ChangeType::Add,
+                content: s,
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]

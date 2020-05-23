@@ -188,7 +188,7 @@ pub async fn push_repo(
     repo_id: &str,
     credentials: &TokenCredentials,
 ) -> Result<()> {
-    let mut query = conn.prepare("SELECT id, path FROM documents")?;
+    let mut query = conn.prepare("SELECT id, relative_path FROM documents")?;
     let documents = query.query_map(NO_PARAMS, |row| Ok(DocumentRow(row.get(0)?, row.get(1)?)))?;
     let mut document_requests = Vec::new();
     for doc in documents {

@@ -13,9 +13,9 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
     let mut values = Vec::new();
     for diff in diffs {
         let (type_, content) = match diff {
-            Difference::Add(c) => ("add", c),
-            Difference::Rem(c) => ("remove", c),
-            Difference::Same(c) => ("same", c),
+            Difference::Add(c) => ("Add", c),
+            Difference::Rem(c) => ("Remove", c),
+            Difference::Same(c) => ("Same", c),
         };
         let val = json!({
            "type": type_,

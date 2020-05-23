@@ -27,11 +27,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, fs, io, process};
-use termion::raw::IntoRawMode;
 use thiserror::Error;
 use tokio::time;
-use tui::backend::TermionBackend;
-use tui::Terminal;
 use types::InternalConfig;
 use watcher::{insert_file, watch_file};
 

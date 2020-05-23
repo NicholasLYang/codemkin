@@ -73,6 +73,8 @@ pub struct Change {
     pub change_elements: Vec<ChangeElement>,
 }
 
+// Sigh, to get around the orphan rule, we define
+// our own difference type
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ChangeElement {
     #[serde(rename = "type")]

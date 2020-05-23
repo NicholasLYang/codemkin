@@ -1,30 +1,13 @@
+use crate::types::ChangeElement;
 use crate::{connect_to_db, read_pid_file};
 use anyhow::Result;
-use difference::{Changeset, Difference};
+use difference::Changeset;
 use rusqlite::{params, Connection};
-use serde_json::json;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, io};
 use tokio::time;
-
-fn diffs_to_json(diffs: &Vec<Difference>) -> String {
-    let mut values = Vec::new();
-    for diff in diffs {
-        let (type_, content) = match diff {
-            Difference::Add(c) => ("Add", c),
-            Difference::Rem(c) => ("Remove", c),
-            Difference::Same(c) => ("Same", c),
-        };
-        let val = json!({
-           "type": type_,
-           "content": content
-        });
-        values.push(val.to_string());
-    }
-    format!("[{}]", values.join(","))
-}
 
 pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64> {
     conn.execute(
@@ -68,10 +51,15 @@ pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64
         let current_contents = fs::read_to_string(&*file_path)?;
         let changeset = Changeset::new(&previous_contents, &current_contents, "\n");
         if changeset.distance > 0 {
-            let diffs_str = diffs_to_json(&changeset.diffs);
+            let change_elements: Vec<ChangeElement> = changeset
+                .diffs
+                .into_iter()
+                .map(|diff| diff.into())
+                .collect();
+            let elem_str = serde_json::to_string(&change_elements)?;
             match conn.execute(
                 "INSERT INTO changes (document_id, change_elements) VALUES (?1, ?2)",
-                params![id, diffs_str],
+                params![id, elem_str],
             ) {
                 Ok(_) => (),
                 Err(_) => {

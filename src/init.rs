@@ -1,8 +1,8 @@
 use crate::types::{InternalConfig, UserConfig};
 use crate::uploader::{create_repo, read_line};
-use crate::watcher::initialize_tables;
 use crate::{connect_to_db, login_user};
 use anyhow::Result;
+use rusqlite::{Connection, NO_PARAMS};
 use std::path::PathBuf;
 use std::{fs, io};
 
@@ -19,7 +19,7 @@ pub async fn init(directory: PathBuf) -> Result<()> {
         println!("Database already exists, skipping...");
     } else {
         let conn = connect_to_db(&directory)?;
-        if initialize_tables(&conn).is_err() {
+        if init_tables(&conn).is_err() {
             return Err(io::Error::new(io::ErrorKind::Other, "Could not initialize tables").into());
         };
     }
@@ -31,6 +31,27 @@ pub async fn init(directory: PathBuf) -> Result<()> {
         "Successfully initialized in directory {}",
         directory.to_str().unwrap()
     );
+    Ok(())
+}
+
+pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS documents (\
+                        id integer primary key,\
+                        relative_path text not null,\
+                        canonical_path text not null unique
+                        )",
+        NO_PARAMS,
+    )?;
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS changes (\
+                        id integer primary key,\
+                        document_id text not null,\
+                        change_elements text not null,\
+                        created_at DATE DEFAULT (datetime('now','utc'))
+                        )",
+        NO_PARAMS,
+    )?;
     Ok(())
 }
 

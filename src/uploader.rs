@@ -149,7 +149,6 @@ async fn push_document(
                 document_id: document_response.id.clone(),
                 created_at,
             };
-
             change_requests.push(req);
         }
     } else {

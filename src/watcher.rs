@@ -1,7 +1,6 @@
-use crate::connect_to_db;
+use crate::{connect_to_db, read_pid_file};
 use anyhow::Result;
 use difference::{Changeset, Difference};
-use rusqlite::NO_PARAMS;
 use rusqlite::{params, Connection};
 use serde_json::json;
 use std::path::PathBuf;
@@ -27,34 +26,17 @@ fn diffs_to_json(diffs: &Vec<Difference>) -> String {
     format!("[{}]", values.join(","))
 }
 
-pub fn initialize_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
+pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64> {
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS documents (\
-                        id integer primary key,\
-                        path text not null unique\
-                        )",
-        NO_PARAMS,
-    )?;
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS changes (\
-                        id integer primary key,\
-                        document_id text not null,\
-                        change_elements text not null,\
-                        created_at DATE DEFAULT (datetime('now','utc'))
-                        )",
-        NO_PARAMS,
-    )?;
-    Ok(())
-}
-
-pub fn insert_file(conn: &Connection, file_path: &Arc<PathBuf>) -> Result<i64, rusqlite::Error> {
-    conn.execute(
-        "INSERT OR IGNORE INTO documents (path) VALUES (?1)",
-        &[file_path.to_str().unwrap()],
+        "INSERT OR IGNORE INTO documents (relative_path, canonical_path) VALUES (?1, ?2)",
+        &[
+            file_path.to_str().unwrap(),
+            file_path.canonicalize()?.to_str().unwrap(),
+        ],
     )?;
     let id = conn.query_row(
-        "SELECT id FROM documents WHERE path = ?1",
-        &[file_path.to_str().unwrap()],
+        "SELECT id FROM documents WHERE canonical_path = ?1",
+        &[file_path.canonicalize()?.to_str().unwrap()],
         |row| row.get(0),
     )?;
     Ok(id)
@@ -72,8 +54,9 @@ pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64
         }
     };
     println!("Watching file {:?}", file_path);
-    loop {
+    while read_pid_file(&*dir_path)?.is_some() {
         interval.tick().await;
+
         let metadata = (&*file_path).metadata()?;
         // If the last modified date still matches, we don't do anything
         let modified = metadata.modified()?;
@@ -100,4 +83,5 @@ pub async fn watch_file(dir_path: Arc<PathBuf>, file_path: Arc<PathBuf>, id: i64
             previous_contents = current_contents;
         }
     }
+    Ok(())
 }

@@ -1,6 +1,7 @@
 extern crate anyhow;
 extern crate chrono;
 extern crate clap;
+extern crate ctrlc;
 extern crate difference;
 extern crate futures;
 extern crate ignore;
@@ -16,20 +17,24 @@ use crate::types::{TokenCredentials, UserConfig};
 use crate::uploader::{create_repo, login, push_repo, register};
 use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
+use ctrlc::set_handler;
 use ignore::{DirEntry, Walk};
 use init::init;
 use rusqlite::Connection;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 use std::{env, fs, io, process};
 use termion::raw::IntoRawMode;
 use thiserror::Error;
+use tokio::time;
 use tui::backend::TermionBackend;
 use tui::Terminal;
 use types::InternalConfig;
 use watcher::{insert_file, watch_file};
 
+mod history;
 mod init;
 mod types;
 mod uploader;
@@ -73,21 +78,33 @@ fn read_user_config() -> Result<Option<UserConfig>> {
     Ok(Some(config))
 }
 
-fn read_pid_file() -> Result<Option<u32>> {
-    let pid_path = Path::new("./.cdmkn/watcher.pid");
+fn read_pid_file(dir: &PathBuf) -> Result<Option<u32>> {
+    let pid_path = {
+        let mut path = dir.clone();
+        path.push(".cdmkn");
+        path.push("watcher.pid");
+        path
+    };
     if !pid_path.exists() {
         return Ok(None);
     }
     Ok(Some(fs::read_to_string(&pid_path)?.parse::<u32>()?))
 }
 
-fn write_pid_file(pid: u32) -> Result<()> {
-    let pid_path = Path::new("./.cdmkn/watcher.pid");
+fn write_pid_file(pid: u32, dir: &PathBuf) -> Result<()> {
+    let pid_path = {
+        let mut path = dir.clone();
+        path.push(".cdmkn");
+        path.push("watcher.pid");
+        path
+    };
     Ok(fs::write(pid_path, format!("{}", pid))?)
 }
 
 fn print_status() -> Result<()> {
-    let pid = read_pid_file()?;
+    let mut dir = PathBuf::new();
+    dir.push(".");
+    let pid = read_pid_file(&dir)?;
     if let Some(pid) = pid {
         println!("Codemkin is watching this directory on pid {}", pid);
     } else {
@@ -161,9 +178,13 @@ async fn main() -> Result<()> {
         };
         let conn = connect_to_db(&env::current_dir()?)?;
         push_repo(&conn, &config.id, &credentials).await?;
-    } else if let Some(init_matches) = matches.subcommand_matches("history") {
-        print!("\x1B[2J");
-        loop {}
+    } else if let Some(history_matches) = matches.subcommand_matches("history") {
+        if let Some(file_path) = history_matches.value_of("file") {
+            print!("\x1B[2J");
+            let file_contents = fs::read_to_string(file_path)?;
+            println!("{}", file_contents);
+            loop {}
+        }
     } else if matches.subcommand_matches("register").is_some() {
         let creds = register().await?;
         let mut config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
@@ -205,11 +226,15 @@ async fn init_watch(dir: Arc<PathBuf>) -> Result<()> {
     // NOTE: This is a (not-so) subtle race condition where
     // in between reading and writing the pid file another process
     // could spin up. I'm not going to worry about that right now.
-    if let Some(pid) = read_pid_file()? {
+    if let Some(pid) = read_pid_file(&dir)? {
         return Err(CodemkinError::CdmknAlreadyRunning { pid }.into());
     }
     let pid = process::id();
-    write_pid_file(pid)?;
+    write_pid_file(pid, &dir)?;
+    set_handler(|| {
+        fs::remove_file("./.cdmkn/watcher.pid").unwrap();
+        println!("Cleaning up...");
+    })?;
 
     let conn = connect_to_db(&*dir)?;
     let mut watched_files = HashSet::new();
@@ -217,7 +242,8 @@ async fn init_watch(dir: Arc<PathBuf>) -> Result<()> {
         "Listening in directory {}",
         (&*dir).to_str().unwrap_or("??")
     );
-    loop {
+    let mut interval = time::interval(Duration::from_millis(5000));
+    while read_pid_file(&dir)?.is_some() {
         let walker = Walk::new(&*dir).into_iter();
         for entry in walker {
             let entry = match entry {
@@ -246,5 +272,7 @@ async fn init_watch(dir: Arc<PathBuf>) -> Result<()> {
                 tokio::spawn(watch_file(dir.clone(), entry_path.clone(), id));
             }
         }
+        interval.tick().await;
     }
+    Ok(())
 }

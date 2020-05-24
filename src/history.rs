@@ -2,6 +2,7 @@ use crate::types::{ChangeElement, ChangeType};
 use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::convert::TryInto;
+use std::fs;
 use std::io::{stdin, stdout, Stdout};
 use std::path::Path;
 use termion::event::Key;
@@ -30,21 +31,7 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     for change in changes {
         let elem_str: String = change?;
         let elements = serde_json::from_str::<Vec<ChangeElement>>(&elem_str)?;
-        let text_elements = elements
-            .into_iter()
-            .map(|elem| match elem.type_ {
-                ChangeType::Same => Text::Raw(elem.content.into()),
-                ChangeType::Add => Text::Styled(
-                    format!("\n+ {}", elem.content).into(),
-                    Style::default().fg(Color::Green),
-                ),
-                ChangeType::Remove => Text::Styled(
-                    format!("\n- {}", elem.content).into(),
-                    Style::default().fg(Color::Red),
-                ),
-            })
-            .collect::<Vec<Text>>();
-        file_states.push(text_elements);
+        file_states.push(elements);
     }
     if file_states.len() == 0 {
         eprintln!("No history available for file");
@@ -79,6 +66,10 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
                 scroll_index += 1;
                 scroll_index %= u16::MAX;
             }
+            Key::Char('s') => {
+                let file_text = get_file_text(&file_states[index]);
+                fs::write(path, file_text)?;
+            }
             Key::Up | Key::Ctrl('p') => {
                 scroll_index = scroll_index.saturating_sub(1);
             }
@@ -105,13 +96,38 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn get_file_text(elements: &Vec<ChangeElement>) -> String {
+    elements
+        .iter()
+        .filter_map(|elem| match elem.type_ {
+            ChangeType::Add | ChangeType::Same => Some(elem.content.clone()),
+            ChangeType::Remove => None,
+        })
+        .collect::<Vec<String>>()
+        .join("")
+}
+
 fn draw_file(
     terminal: &mut Terminal<TermionBackend<RawTerminal<Stdout>>>,
-    text: &Vec<Text>,
+    elements: &Vec<ChangeElement>,
     scroll_index: u16,
     percent: u16,
 ) -> Result<()> {
     terminal.draw(|mut f| {
+        let text = elements
+            .into_iter()
+            .map(|elem| match elem.type_ {
+                ChangeType::Same => Text::Raw(elem.content.clone().into()),
+                ChangeType::Add => Text::Styled(
+                    format!("\n+ {}", elem.content).into(),
+                    Style::default().fg(Color::Green),
+                ),
+                ChangeType::Remove => Text::Styled(
+                    format!("\n- {}", elem.content).into(),
+                    Style::default().fg(Color::Red),
+                ),
+            })
+            .collect::<Vec<Text>>();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .margin(1)

@@ -1,21 +1,21 @@
 use crate::types::{ChangeElement, ChangeType};
 use anyhow::Result;
-use chrono::Utc;
 use rusqlite::{params, Connection};
+use std::convert::TryInto;
 use std::io::{stdin, stdout, Stdout};
 use std::path::Path;
 use termion::event::Key;
 use termion::input::TermRead;
 use termion::raw::{IntoRawMode, RawTerminal};
 use tui::backend::TermionBackend;
-use tui::layout::Alignment;
+use tui::layout::{Alignment, Constraint, Direction, Layout};
 use tui::style::{Color, Modifier, Style};
-use tui::widgets::{Block, Borders, Paragraph, Text};
+use tui::widgets::{Block, Borders, Gauge, Paragraph, Text};
 use tui::Terminal;
 
 pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     let mut changes_query = conn.prepare(
-        "SELECT change_elements, created_at FROM changes \
+        "SELECT change_elements FROM changes \
     JOIN documents ON changes.document_id = documents.id \
     WHERE documents.canonical_path == ?1\
     ORDER BY created_at DESC \
@@ -23,25 +23,32 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     )?;
     let changes = changes_query
         .query_map(params![path.canonicalize()?.to_str().unwrap()], |row| {
-            Ok((row.get(0)?, row.get(1)?))
+            Ok(row.get(0)?)
         })?;
     let stdin = stdin();
     let mut file_states = Vec::new();
     for change in changes {
-        let (elem_str, created_at): (String, chrono::DateTime<Utc>) = change?;
+        let elem_str: String = change?;
         let elements = serde_json::from_str::<Vec<ChangeElement>>(&elem_str)?;
-        let file = elements
+        let text_elements = elements
             .into_iter()
-            .filter_map(|elem| {
-                if let ChangeType::Same = elem.type_ {
-                    Some(elem.content)
-                } else {
-                    None
-                }
+            .map(|elem| match elem.type_ {
+                ChangeType::Same => Text::Raw(elem.content.into()),
+                ChangeType::Add => Text::Styled(
+                    format!("\n+ {}", elem.content).into(),
+                    Style::default().fg(Color::Green),
+                ),
+                ChangeType::Remove => Text::Styled(
+                    format!("\n- {}", elem.content).into(),
+                    Style::default().fg(Color::Red),
+                ),
             })
-            .collect::<Vec<String>>()
-            .join("");
-        file_states.push((file, created_at));
+            .collect::<Vec<Text>>();
+        file_states.push(text_elements);
+    }
+    if file_states.len() == 0 {
+        eprintln!("No history available for file");
+        return Ok(());
     }
     let mut index: usize = 0;
     let mut scroll_index: u16 = 0;
@@ -50,19 +57,14 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
     terminal.hide_cursor()?;
     terminal.clear()?;
+    let percent: u16 = (index * 100 / file_states.len()).try_into()?;
     draw_file(
         &mut terminal,
-        &file_states[index].0,
-        &file_states[index].1,
+        &file_states[index],
         scroll_index,
+        100 - percent,
     )?;
     for event in stdin.keys() {
-        draw_file(
-            &mut terminal,
-            &file_states[index].0,
-            &file_states[index].1,
-            scroll_index,
-        )?;
         match event? {
             Key::Left => {
                 index = (index + 1) % file_states.len();
@@ -70,15 +72,21 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
             Key::Right => {
                 index = index.saturating_sub(1);
             }
+            Key::Alt('<') => {
+                scroll_index = 0;
+            }
             Key::Char('\n') => {
                 scroll_index += 1;
                 scroll_index %= u16::MAX;
             }
-            Key::Up => {
+            Key::Up | Key::Ctrl('p') => {
                 scroll_index = scroll_index.saturating_sub(1);
             }
-            Key::Char(' ') | Key::Down => {
+            Key::Char(' ') => {
                 scroll_index = (scroll_index + 16) % u16::MAX;
+            }
+            Key::Down | Key::Ctrl('n') => {
+                scroll_index = (scroll_index + 1) & u16::MAX;
             }
             Key::Char('q') => {
                 terminal.clear()?;
@@ -86,33 +94,48 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
             }
             _ => {}
         }
+        let percent: u16 = (index * 100 / file_states.len()).try_into()?;
+        draw_file(
+            &mut terminal,
+            &file_states[index],
+            scroll_index,
+            100 - percent,
+        )?;
     }
     Ok(())
 }
 
 fn draw_file(
     terminal: &mut Terminal<TermionBackend<RawTerminal<Stdout>>>,
-    file: &str,
-    created_at: &chrono::DateTime<Utc>,
+    text: &Vec<Text>,
     scroll_index: u16,
+    percent: u16,
 ) -> Result<()> {
     terminal.draw(|mut f| {
-        let size = f.size();
-        let text = [
-            Text::raw(file),
-            Text::Styled(
-                format!("{:?}", created_at).into(),
-                Style::default().fg(Color::Red),
-            ),
-        ];
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([Constraint::Percentage(95), Constraint::Percentage(5)].as_ref())
+            .split(f.size());
         let block = Block::default()
             .borders(Borders::ALL)
             .title_style(Style::default().modifier(Modifier::BOLD));
+        let percent_str = format!("{}", percent);
         let paragraph = Paragraph::new(text.iter())
             .block(block.clone().title("File"))
             .alignment(Alignment::Left)
             .scroll(scroll_index);
-        f.render_widget(paragraph, size);
+        f.render_widget(paragraph, chunks[0]);
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(&percent_str))
+            .style(
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Black)
+                    .modifier(Modifier::ITALIC),
+            )
+            .percent(percent);
+        f.render_widget(gauge, chunks[1]);
     })?;
     Ok(())
 }

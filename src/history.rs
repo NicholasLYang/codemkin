@@ -45,13 +45,16 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
     terminal.hide_cursor()?;
     terminal.clear()?;
     let percent: u16 = (index * 100 / file_states.len()).try_into()?;
+    let mut header = path.to_str().unwrap_or("File").to_string();
     draw_file(
         &mut terminal,
         &file_states[index],
         scroll_index,
         100 - percent,
+        &header,
     )?;
     for event in stdin.keys() {
+        header = path.to_str().unwrap_or("File").to_string();
         match event? {
             Key::Left => {
                 index = (index + 1) % file_states.len();
@@ -69,6 +72,7 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
             Key::Char('s') => {
                 let file_text = get_file_text(&file_states[index]);
                 fs::write(path, file_text)?;
+                header = format!("{} (saved)", path.to_str().unwrap_or("File"));
             }
             Key::Up | Key::Ctrl('p') => {
                 scroll_index = scroll_index.saturating_sub(1);
@@ -91,6 +95,7 @@ pub fn display_file_history(path: &Path, conn: &Connection) -> Result<()> {
             &file_states[index],
             scroll_index,
             100 - percent,
+            &header,
         )?;
     }
     Ok(())
@@ -112,6 +117,7 @@ fn draw_file(
     elements: &Vec<ChangeElement>,
     scroll_index: u16,
     percent: u16,
+    header: &str,
 ) -> Result<()> {
     terminal.draw(|mut f| {
         let text = elements
@@ -138,7 +144,7 @@ fn draw_file(
             .title_style(Style::default().modifier(Modifier::BOLD));
         let percent_str = format!("{}", percent);
         let paragraph = Paragraph::new(text.iter())
-            .block(block.clone().title("File"))
+            .block(block.clone().title(header))
             .alignment(Alignment::Left)
             .scroll(scroll_index);
         f.render_widget(paragraph, chunks[0]);

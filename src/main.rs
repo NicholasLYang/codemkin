@@ -1,6 +1,7 @@
 extern crate anyhow;
 extern crate chrono;
 extern crate clap;
+extern crate clipboard;
 extern crate ctrlc;
 extern crate difference;
 extern crate futures;

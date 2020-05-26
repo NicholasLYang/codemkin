@@ -4,9 +4,10 @@ Codemkin is an application that watches your files and stores changes. It allows
 programming process, storing every single change you make to your code. This allows you to replay your programming.
 
 ## TODO
--  Display file history
--  Revert back to version
--  Delete old changes
+-  ~~Display file history~~
+-  ~~Revert back to version~~
+-  Provide option to copy snippet
+-  Store a master list of cdmkn repos at root
 
 ## Ideas
 

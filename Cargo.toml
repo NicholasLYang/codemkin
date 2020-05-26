@@ -10,6 +10,7 @@ edition = "2018"
 anyhow = "1.0.31"
 clap = "2.33.1"
 chrono = { version = "0.4.11", features = ["serde"] }
+clipboard = "0.5.0"
 ctrlc = "3.1.4"
 difference = "2.0"
 futures = "0.3.5"

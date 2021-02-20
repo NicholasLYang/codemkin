@@ -41,15 +41,19 @@ impl TryFrom<&HeaderMap> for TokenCredentials {
             .to_str()
             .unwrap()
             .to_string();
+
         let client = headers.get("client").unwrap().to_str().unwrap().to_string();
         let expiry = headers.get("expiry").unwrap().to_str().unwrap().to_string();
+
         let token_type = headers
             .get("token-type")
             .unwrap()
             .to_str()
             .unwrap()
             .to_string();
+
         let uid = headers.get("uid").unwrap().to_str().unwrap().to_string();
+
         Ok(TokenCredentials {
             token,
             client,
@@ -81,6 +85,7 @@ async fn login_or_register(request_url: String) -> Result<TokenCredentials> {
         let credentials = LoginCredentials { email, password };
         let client = reqwest::Client::new();
         let resp = client.post(&request_url).json(&credentials).send().await?;
+
         if resp.status().is_success() {
             let headers = resp.headers();
             let credentials: TokenCredentials = headers.try_into()?;

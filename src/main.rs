@@ -1,19 +1,3 @@
-extern crate anyhow;
-extern crate chrono;
-extern crate clap;
-extern crate clipboard;
-extern crate ctrlc;
-extern crate difference;
-extern crate futures;
-extern crate ignore;
-extern crate reqwest;
-extern crate rusqlite;
-extern crate serde;
-extern crate serde_json;
-extern crate thiserror;
-extern crate tokio;
-extern crate toml;
-
 use crate::history::display_file_history;
 use crate::types::{TokenCredentials, UserConfig};
 use crate::uploader::{login, push_repo, register};

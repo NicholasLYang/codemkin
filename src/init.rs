@@ -5,16 +5,19 @@ use anyhow::Result;
 use rusqlite::{Connection, NO_PARAMS};
 use std::path::PathBuf;
 use std::{fs, io};
+use dialoguer::Confirm;
 
 pub async fn init(directory: PathBuf) -> Result<()> {
     let mut cdmkn_dir = directory.clone();
     cdmkn_dir.push(".cdmkn");
     fs::create_dir_all(&cdmkn_dir)?;
+
     let db_path = {
         let mut path = cdmkn_dir.clone();
         path.push("files.db");
         path
     };
+
     if db_path.exists() {
         println!("Database already exists, skipping...");
     } else {
@@ -25,7 +28,11 @@ pub async fn init(directory: PathBuf) -> Result<()> {
     }
     let mut name = String::new();
     read_line(&mut name, "Repo name: ")?;
-    init_internal_config(&cdmkn_dir, &name).await?;
+
+    if Confirm::new().with_prompt("Do you want to login? If not, your data will only be saved locally").interact()? {
+        init_internal_config(&cdmkn_dir, &name).await?
+    }
+
     init_user_config(&directory)?;
     println!(
         "Successfully initialized in directory {}",
@@ -55,6 +62,17 @@ pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+fn init_user_config(directory: &PathBuf) -> Result<()> {
+    let cdmkn_toml_path = {
+        let mut dir = directory.clone();
+        dir.push("cdmkn.toml");
+        dir
+    };
+    fs::write(cdmkn_toml_path, toml::to_string(&UserConfig::new())?)?;
+    Ok(())
+}
+
+
 async fn init_internal_config(cdmkn_dir: &PathBuf, repo_name: &str) -> Result<()> {
     let config_path = {
         let mut dir = cdmkn_dir.clone();
@@ -65,6 +83,7 @@ async fn init_internal_config(cdmkn_dir: &PathBuf, repo_name: &str) -> Result<()
         // TODO: Add some sort of validation to check if config
         // is actually valid
         println!("Config already exists, skipping...");
+        Ok(())
     } else {
         let credentials = login_user().await?;
         let repo = create_repo(&credentials, repo_name).await?;
@@ -73,16 +92,6 @@ async fn init_internal_config(cdmkn_dir: &PathBuf, repo_name: &str) -> Result<()
             token_credentials: Some(credentials),
         };
         fs::write(config_path, toml::to_string(&config).unwrap())?;
+        Ok(())
     }
-    Ok(())
-}
-
-fn init_user_config(directory: &PathBuf) -> Result<()> {
-    let cdmkn_toml_path = {
-        let mut dir = directory.clone();
-        dir.push("cdmkn.toml");
-        dir
-    };
-    fs::write(cdmkn_toml_path, toml::to_string(&UserConfig::new())?)?;
-    Ok(())
 }

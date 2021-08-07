@@ -1,12 +1,10 @@
-use crate::history::display_file_history;
 use crate::types::{TokenCredentials, UserConfig};
-use crate::uploader::{login, push_repo, register};
 use anyhow::Result;
 use clap::{App, AppSettings, Arg, SubCommand};
 use ctrlc::set_handler;
 use ignore::{DirEntry, Walk};
-use init::init;
-use rusqlite::Connection;
+use init::add_repository;
+use rusqlite::{Connection, NO_PARAMS};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -20,7 +18,6 @@ use watcher::{insert_file, watch_file};
 mod history;
 mod init;
 mod types;
-mod uploader;
 mod watcher;
 
 #[derive(Error, Debug)]
@@ -85,14 +82,12 @@ fn write_pid_file(pid: u32, dir: &PathBuf) -> Result<()> {
 }
 
 fn print_status() -> Result<()> {
-    let mut dir = PathBuf::new();
-    dir.push(".");
-    let pid = read_pid_file(&dir)?;
-    if let Some(pid) = pid {
-        println!("Codemkin is watching this directory on pid {}", pid);
-    } else {
-        println!("Codemkin is not watching this directory");
-    }
+    let conn = connect_to_db()?;
+    let count =
+        conn.query_row::<u32, _, _>("SELECT COUNT(*) FROM repositories;", NO_PARAMS, |row| {
+            row.get(0)
+        })?;
+    println!("{}", count);
     Ok(())
 }
 
@@ -107,41 +102,28 @@ async fn main() -> Result<()> {
     let matches = App::new("cdmkn")
         .version("0.1.0")
         .author("Nicholas Yang")
-        .about("Code montages")
+        .about("Code watcher utility")
         .setting(AppSettings::ArgRequiredElseHelp)
         .setting(AppSettings::ColoredHelp)
         .subcommand(
-            SubCommand::with_name("watch")
-                .about("Watch folder")
+            SubCommand::with_name("add")
+                .about("Add repository")
                 .arg(Arg::with_name("dir")),
         )
-        .subcommand(SubCommand::with_name("login").about("Login to API"))
-        .subcommand(SubCommand::with_name("register").about("Register an account"))
         .subcommand(
             SubCommand::with_name("init")
-                .about("Initialize repo")
+                .about("Initialize watcher")
                 .arg(Arg::with_name("dir")),
-        )
-        .subcommand(SubCommand::with_name("push").about("Push repo to server"))
-        .subcommand(
-            SubCommand::with_name("history")
-                .about("See history for a file")
-                .arg(Arg::with_name("file").required(true)),
         )
         .subcommand(SubCommand::with_name("status").about("See current status for codemkin"))
         .get_matches();
 
-    if let Some(watch_matches) = matches.subcommand_matches("watch") {
+    if let Some(watch_matches) = matches.subcommand_matches("init") {
         let folder = watch_matches.value_of("dir").unwrap_or(".");
         let mut dir = PathBuf::new();
         dir.push(folder);
         init_watch(Arc::new(dir)).await?;
-    } else if matches.subcommand_matches("login").is_some() {
-        let creds = login_user().await?;
-        let mut config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
-        config.token_credentials = Some(creds);
-        write_config(&config)?;
-    } else if let Some(init_matches) = matches.subcommand_matches("init") {
+    } else if let Some(init_matches) = matches.subcommand_matches("add") {
         let dir = if let Some(folder_name) = init_matches.value_of("dir") {
             let mut p = PathBuf::new();
             p.push(folder_name);
@@ -151,54 +133,18 @@ async fn main() -> Result<()> {
             p.push(".");
             p
         };
-        init(dir).await?;
-    } else if matches.subcommand_matches("push").is_some() {
-        let config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
-        let credentials = if let Some(creds) = config.token_credentials {
-            creds
-        } else {
-            login_user().await?
-        };
-        let conn = connect_to_db(&env::current_dir()?)?;
-        push_repo(&conn, &config.id, &credentials).await?;
-    } else if let Some(history_matches) = matches.subcommand_matches("history") {
-        if let Some(file_path) = history_matches.value_of("file") {
-            display_file_history(Path::new(file_path), &connect_to_db(Path::new("."))?)?;
-        }
-    } else if matches.subcommand_matches("register").is_some() {
-        let creds = register().await?;
-        let mut config = read_internal_config()?.ok_or(CodemkinError::InvalidCdmknFolder)?;
-        config.token_credentials = Some(creds);
-        write_config(&config)?;
+        add_repository(dir).await?;
     } else if matches.subcommand_matches("status").is_some() {
-        let dir_path = Path::new("./.cdmkn");
-        if !dir_path.exists() {
-            println!("Codemkin is not initialized in this directory")
-        }
         print_status()?;
     }
     Ok(())
 }
 
-pub fn connect_to_db(dir: &Path) -> Result<Connection> {
-    let db_path = {
-        let mut db_pathbuf = dir.to_path_buf();
-        db_pathbuf.push(".cdmkn");
-        fs::create_dir_all(&db_pathbuf)?;
-        db_pathbuf.push("files.db");
-        Arc::new(db_pathbuf)
-    };
-    match Connection::open(&*db_path) {
+pub fn connect_to_db() -> Result<Connection> {
+    match Connection::open("~/.cdmkn/database.db") {
         Ok(conn) => Ok(conn),
         Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Could not connect to db").into()),
     }
-}
-
-async fn login_user() -> Result<TokenCredentials> {
-    println!("Please login");
-    let credentials = login().await?;
-    println!("Successfully logged in");
-    Ok(credentials)
 }
 
 // I have started my watch
@@ -216,7 +162,7 @@ async fn init_watch(dir: Arc<PathBuf>) -> Result<()> {
         println!("Cleaning up...");
     })?;
 
-    let conn = connect_to_db(&*dir)?;
+    let conn = connect_to_db()?;
     let mut watched_files = HashSet::new();
     println!(
         "Listening in directory {}",

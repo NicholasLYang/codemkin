@@ -1,62 +1,88 @@
+use crate::connect_to_db;
 use crate::types::{InternalConfig, UserConfig};
-use crate::uploader::{create_repo, read_line};
-use crate::{connect_to_db, login_user};
 use anyhow::Result;
-use rusqlite::{Connection, NO_PARAMS};
-use std::path::PathBuf;
-use std::{fs, io};
 use dialoguer::Confirm;
+use rusqlite::{Connection, NO_PARAMS};
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+use std::{fs, io};
 
-pub async fn init(directory: PathBuf) -> Result<()> {
-    let mut cdmkn_dir = directory.clone();
-    cdmkn_dir.push(".cdmkn");
-    fs::create_dir_all(&cdmkn_dir)?;
+fn init() -> Result<()> {
+    println!("INIT");
+    let cdmkn_folder = Path::new("~/.cdmkn");
+    if !cdmkn_folder.exists() {
+        println!("FOLDER DOES NOT exist");
+        fs::create_dir_all(cdmkn_folder)?;
 
-    let db_path = {
-        let mut path = cdmkn_dir.clone();
-        path.push("files.db");
-        path
-    };
+        OpenOptions::new()
+            .create(true)
+            .write(true)
+            .open(cdmkn_folder.join("database.db"))?;
 
-    if db_path.exists() {
-        println!("Database already exists, skipping...");
+        let conn = connect_to_db()?;
+
+        init_tables(&conn)
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, "Could not initialize tables"))?;
     } else {
-        let conn = connect_to_db(&directory)?;
-        if init_tables(&conn).is_err() {
-            return Err(io::Error::new(io::ErrorKind::Other, "Could not initialize tables").into());
-        };
-    }
-    let mut name = String::new();
-    read_line(&mut name, "Repo name: ")?;
-
-    if Confirm::new().with_prompt("Do you want to login? If not, your data will only be saved locally").interact()? {
-        init_internal_config(&cdmkn_dir, &name).await?
+        println!("FOLDER DOES exist");
     }
 
-    init_user_config(&directory)?;
-    println!(
-        "Successfully initialized in directory {}",
-        directory.to_str().unwrap()
-    );
+    Ok(())
+}
+
+pub async fn add_repository(repo_path: PathBuf) -> Result<()> {
+    init()?;
+    let absolute_repo_path = repo_path.canonicalize()?.display().to_string();
+    let conn = connect_to_db()?;
+    let row_count = conn.query_row::<u32, _, _>(
+        "SELECT COUNT(*) FROM repositories WHERE absolute_path = ?1",
+        &[&absolute_repo_path],
+        |row| row.get(0),
+    )?;
+
+    if row_count == 1 {
+        println!("Repository is already added");
+    } else {
+        conn.execute(
+            "INSERT INTO repositories (absolute_path) VALUES (?1)",
+            &[&absolute_repo_path],
+        )?;
+        println!("Added repository");
+    }
+
     Ok(())
 }
 
 pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
-        "CREATE TABLE IF NOT EXISTS documents (\
-                        id integer primary key,\
-                        relative_path text not null,\
-                        canonical_path text not null unique
-                        )",
+        "CREATE TABLE IF NOT EXISTS repositories (\
+                  id integer primary key,\
+                  absolute_path text not null unique,\
+                  created_at DATE DEFAULT (datetime('now','utc')),\
+             )",
         NO_PARAMS,
     )?;
+
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS documents (\
+                 id integer primary key,\
+                 repository_id integer not null,\
+                 relative_path text not null,\
+                 canonical_path text not null unique,\
+                 created_at DATE DEFAULT (datetime('now','utc')),\
+                 FOREIGN KEY (repository_id) REFERENCES repositories(id)\
+             )",
+        NO_PARAMS,
+    )?;
+
     conn.execute(
         "CREATE TABLE IF NOT EXISTS changes (\
-                        id integer primary key,\
-                        document_id text not null,\
-                        change_elements text not null,\
-                        created_at DATE DEFAULT (datetime('now','utc'))
-                        )",
+                 id integer primary key,\
+                 document_id text not null,\
+                 change_elements text not null,\
+                 created_at DATE DEFAULT (datetime('now','utc')),
+                 FOREIGN KEY (document_id) REFERENCES documents(id)
+             )",
         NO_PARAMS,
     )?;
     Ok(())
@@ -70,28 +96,4 @@ fn init_user_config(directory: &PathBuf) -> Result<()> {
     };
     fs::write(cdmkn_toml_path, toml::to_string(&UserConfig::new())?)?;
     Ok(())
-}
-
-
-async fn init_internal_config(cdmkn_dir: &PathBuf, repo_name: &str) -> Result<()> {
-    let config_path = {
-        let mut dir = cdmkn_dir.clone();
-        dir.push("config.toml");
-        dir
-    };
-    if config_path.exists() {
-        // TODO: Add some sort of validation to check if config
-        // is actually valid
-        println!("Config already exists, skipping...");
-        Ok(())
-    } else {
-        let credentials = login_user().await?;
-        let repo = create_repo(&credentials, repo_name).await?;
-        let config = InternalConfig {
-            id: repo.id,
-            token_credentials: Some(credentials),
-        };
-        fs::write(config_path, toml::to_string(&config).unwrap())?;
-        Ok(())
-    }
 }

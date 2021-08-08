@@ -7,22 +7,17 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.31"
 clap = "2.33.1"
 chrono = { version = "0.4.11", features = ["serde"] }
-clipboard = "0.5.0"
-ctrlc = "3.1.4"
-dialoguer = "0.7.1"
+color-eyre = "0.5.11"
 difference = "2.0"
-eventstore = "1.0.0"
-futures = "0.3.5"
+dirs = "3.0.2"
+eyre = "0.6.5"
 ignore = "0.4.15"
+notify = "5.0.0-pre.11"
 rusqlite = { version = "0.23.1", features = ["chrono"] }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-termion = "1.5"
 thiserror = "1.0"
 tokio = { version = "0.2", features = ["full"] }
 toml = "0.5.6"
-tui = "0.9"
-reqwest = { version = "0.10", features = ["json"] }

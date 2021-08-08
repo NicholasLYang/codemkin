@@ -1,18 +1,31 @@
 use crate::connect_to_db;
-use crate::types::{InternalConfig, UserConfig};
-use anyhow::Result;
-use dialoguer::Confirm;
+use crate::types::RepoStatus;
+use crate::watcher::read_pid_file;
+use dirs::home_dir;
+use eyre::Result;
 use rusqlite::{Connection, NO_PARAMS};
 use std::fs::OpenOptions;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::{fs, io};
 
-fn init() -> Result<()> {
-    println!("INIT");
-    let cdmkn_folder = Path::new("~/.cdmkn");
+// If try_init fails, we roll back
+// This would be a lot easier with try blocks
+pub fn init_folder() -> Result<()> {
+    let cdmkn_folder = home_dir()
+        .expect("Cannot find home directory")
+        .join(".cdmkn");
+
+    if let Err(err) = try_init_folder(&cdmkn_folder) {
+        fs::remove_dir(&cdmkn_folder)?;
+        Err(err)
+    } else {
+        Ok(())
+    }
+}
+
+fn try_init_folder(cdmkn_folder: &Path) -> Result<()> {
     if !cdmkn_folder.exists() {
-        println!("FOLDER DOES NOT exist");
-        fs::create_dir_all(cdmkn_folder)?;
+        fs::create_dir(&cdmkn_folder)?;
 
         OpenOptions::new()
             .create(true)
@@ -21,17 +34,21 @@ fn init() -> Result<()> {
 
         let conn = connect_to_db()?;
 
-        init_tables(&conn)
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, "Could not initialize tables"))?;
-    } else {
-        println!("FOLDER DOES exist");
+        init_tables(&conn).map_err(|err| {
+            eprintln!("{:?}", err);
+            io::Error::new(io::ErrorKind::Other, "Could not initialize tables")
+        })?;
     }
 
     Ok(())
 }
 
-pub async fn add_repository(repo_path: PathBuf) -> Result<()> {
-    init()?;
+pub async fn add_repository(repo_path: &Path) -> Result<()> {
+    init_folder()?;
+    if read_pid_file()?.is_none() {
+        // TODO: Turn on watcher here
+    }
+
     let absolute_repo_path = repo_path.canonicalize()?.display().to_string();
     let conn = connect_to_db()?;
     let row_count = conn.query_row::<u32, _, _>(
@@ -44,8 +61,11 @@ pub async fn add_repository(repo_path: PathBuf) -> Result<()> {
         println!("Repository is already added");
     } else {
         conn.execute(
-            "INSERT INTO repositories (absolute_path) VALUES (?1)",
-            &[&absolute_repo_path],
+            "INSERT INTO repositories (absolute_path, status) VALUES (?1, ?2)",
+            &[
+                &absolute_repo_path,
+                &(RepoStatus::Active as usize).to_string(),
+            ],
         )?;
         println!("Added repository");
     }
@@ -58,7 +78,8 @@ pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
         "CREATE TABLE IF NOT EXISTS repositories (\
                   id integer primary key,\
                   absolute_path text not null unique,\
-                  created_at DATE DEFAULT (datetime('now','utc')),\
+                  status integer not null,\
+                  created_at DATE DEFAULT (datetime('now','utc'))\
              )",
         NO_PARAMS,
     )?;
@@ -85,15 +106,6 @@ pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
              )",
         NO_PARAMS,
     )?;
-    Ok(())
-}
 
-fn init_user_config(directory: &PathBuf) -> Result<()> {
-    let cdmkn_toml_path = {
-        let mut dir = directory.clone();
-        dir.push("cdmkn.toml");
-        dir
-    };
-    fs::write(cdmkn_toml_path, toml::to_string(&UserConfig::new())?)?;
     Ok(())
 }

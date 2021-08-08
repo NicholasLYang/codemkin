@@ -2,6 +2,12 @@ use chrono::Utc;
 use difference::Difference;
 use serde::{Deserialize, Serialize};
 
+pub enum RepoStatus {
+    Inactive = 0,
+    Starting = 1,
+    Active = 2,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TokenCredentials {
     pub token: String,
@@ -21,12 +27,6 @@ pub struct InternalConfig {
 pub struct Repository {
     pub id: String,
     pub name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LoginCredentials {
-    pub email: String,
-    pub password: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -105,21 +105,6 @@ impl From<Difference> for ChangeElement {
                 type_: ChangeType::Add,
                 content: s,
             },
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct UserConfig {
-    pub patterns: Vec<String>,
-    pub interval_time: u64,
-}
-
-impl UserConfig {
-    pub fn new() -> Self {
-        UserConfig {
-            patterns: Vec::new(),
-            interval_time: 10_000,
         }
     }
 }

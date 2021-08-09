@@ -10,7 +10,6 @@ use notify::{recommended_watcher, RecursiveMode, Watcher};
 use rusqlite::{Connection, NO_PARAMS};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::channel;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{fs, io, process};
@@ -136,6 +135,17 @@ pub fn connect_to_db() -> Result<Connection> {
     }
 }
 
+fn get_repository_paths() -> Result<Vec<String>> {
+    let conn = connect_to_db()?;
+    let mut stmt = conn.prepare("SELECT absolute_path FROM repositories")?;
+
+    let res = stmt
+        .query_map::<String, _, _>(NO_PARAMS, |row| row.get(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(res)
+}
+
 async fn start_watcher() -> Result<()> {
     init_folder()?;
     // NOTE: This is a (not-so) subtle race condition where
@@ -151,37 +161,42 @@ async fn start_watcher() -> Result<()> {
     let mut watched_files = HashSet::new();
     let mut interval = time::interval(Duration::from_millis(5000));
     let mut watcher = recommended_watcher(|res| on_update(res))?;
+    let repos = get_repository_paths()?;
 
     while read_pid_file()?.is_some() {
-        let walker = Walk::new("/Users/nicholas/projects/codemkin").into_iter();
+        println!("{:?}", watched_files);
 
-        for entry in walker {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
+        for repo in &repos {
+            let walker = Walk::new(repo).into_iter();
 
-            let is_valid_file = is_valid_file(&entry);
-            let entry_path = entry.into_path();
-            let is_watched = watched_files.contains(&entry_path);
-
-            if is_valid_file && !is_watched {
-                watched_files.insert(entry_path.clone());
-                watcher.watch(&entry_path, RecursiveMode::NonRecursive)?;
-
-                match insert_file(&conn, 1, &entry_path) {
-                    Ok(id) => id,
-                    Err(err) => {
-                        if cfg!(debug_assertions) {
-                            eprintln!("{:?}", err);
-                        }
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Could not insert file into db",
-                        )
-                        .into());
-                    }
+            for entry in walker {
+                let entry = match entry {
+                    Ok(e) => e,
+                    Err(_) => continue,
                 };
+
+                let is_valid_file = is_valid_file(&entry);
+                let entry_path = entry.into_path();
+                let is_watched = watched_files.contains(&entry_path);
+
+                if is_valid_file && !is_watched {
+                    watched_files.insert(entry_path.clone());
+                    watcher.watch(&entry_path, RecursiveMode::NonRecursive)?;
+
+                    match insert_file(&conn, 1, &entry_path) {
+                        Ok(id) => id,
+                        Err(err) => {
+                            if cfg!(debug_assertions) {
+                                eprintln!("{:?}", err);
+                            }
+                            return Err(io::Error::new(
+                                io::ErrorKind::Other,
+                                "Could not insert file into db",
+                            )
+                            .into());
+                        }
+                    };
+                }
             }
         }
         interval.tick().await;

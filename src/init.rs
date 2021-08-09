@@ -67,7 +67,7 @@ pub async fn add_repository(repo_path: &Path) -> Result<()> {
                 &(RepoStatus::Active as usize).to_string(),
             ],
         )?;
-        println!("Added repository");
+        println!("Added repository at {}", absolute_repo_path);
     }
 
     Ok(())

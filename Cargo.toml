@@ -10,6 +10,7 @@ edition = "2018"
 clap = "2.33.1"
 chrono = { version = "0.4.11", features = ["serde"] }
 color-eyre = "0.5.11"
+ctrlc = "3.2.0"
 difference = "2.0"
 dirs = "3.0.2"
 eyre = "0.6.5"

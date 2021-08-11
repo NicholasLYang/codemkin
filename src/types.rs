@@ -2,6 +2,8 @@ use chrono::Utc;
 use difference::Difference;
 use serde::{Deserialize, Serialize};
 
+// TODO: Use this to activate/deactivate the watcher
+// for specific repos
 pub enum RepoStatus {
     Inactive = 0,
     Starting = 1,

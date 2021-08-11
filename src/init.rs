@@ -1,7 +1,7 @@
 use crate::connect_to_db;
 use crate::types::RepoStatus;
+use crate::utils::cdmkn_dir;
 use crate::watcher::read_pid_file;
-use dirs::home_dir;
 use eyre::Result;
 use rusqlite::{Connection, NO_PARAMS};
 use std::fs::OpenOptions;
@@ -11,9 +11,7 @@ use std::{fs, io};
 // If try_init fails, we roll back
 // This would be a lot easier with try blocks
 pub fn init_folder() -> Result<()> {
-    let cdmkn_folder = home_dir()
-        .expect("Cannot find home directory")
-        .join(".cdmkn");
+    let cdmkn_folder = cdmkn_dir();
 
     if let Err(err) = try_init_folder(&cdmkn_folder) {
         fs::remove_dir(&cdmkn_folder)?;
@@ -26,6 +24,7 @@ pub fn init_folder() -> Result<()> {
 fn try_init_folder(cdmkn_folder: &Path) -> Result<()> {
     if !cdmkn_folder.exists() {
         fs::create_dir(&cdmkn_folder)?;
+        fs::create_dir(cdmkn_folder.join("files"))?;
 
         OpenOptions::new()
             .create(true)
@@ -90,6 +89,7 @@ pub fn init_tables(conn: &Connection) -> Result<(), rusqlite::Error> {
                  repository_id integer not null,\
                  relative_path text not null,\
                  canonical_path text not null unique,\
+                 content text not null,\
                  created_at DATE DEFAULT (datetime('now','utc')),\
                  FOREIGN KEY (repository_id) REFERENCES repositories(id)\
              )",

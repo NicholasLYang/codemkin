@@ -1,16 +1,15 @@
 use crate::init::init_folder;
-use crate::watcher::{on_update, read_pid_file, write_pid_file};
+use crate::utils::{cdmkn_dir, connect_to_db};
+use crate::watcher::{delete_pid_file, on_update, read_pid_file, write_pid_file};
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use color_eyre::Report;
-use dirs::home_dir;
 use eyre::Result;
 use ignore::{DirEntry, Walk};
 use init::add_repository;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
-use rusqlite::{Connection, NO_PARAMS};
+use rusqlite::NO_PARAMS;
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::path::Path;
 use std::time::Duration;
 use std::{fs, io, process};
 use thiserror::Error;
@@ -19,6 +18,7 @@ use watcher::insert_file;
 
 mod init;
 mod types;
+mod utils;
 mod watcher;
 
 #[derive(Error, Debug)]
@@ -48,7 +48,7 @@ fn print_status() -> Result<()> {
             })?;
         println!("Watching {} repositories on pid {}", count, pid);
     } else {
-        println!("cmdkn is not active");
+        println!("cdmkn is not active");
     }
 
     Ok(())
@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
         .about("Code watcher utility")
         .setting(AppSettings::ArgRequiredElseHelp)
         .setting(AppSettings::ColoredHelp)
+        .subcommand(SubCommand::with_name("repos").about("List repos"))
         .subcommand(
             SubCommand::with_name("add")
                 .about("Add repository")
@@ -99,39 +100,43 @@ async fn main() -> Result<()> {
         .subcommand(SubCommand::with_name("status").about("See current status for codemkin"))
         .get_matches();
 
-    if let Some(start_matches) = matches.subcommand_matches("start") {
+    if matches.subcommand_matches("repos").is_some() {
+        let repos = get_repository_paths()?;
+
+        if repos.is_empty() {
+            println!("No repositories! Add one with `cdmkn add`");
+        }
+
+        for repo in repos {
+            println!("{}", repo);
+        }
+
+        Ok(())
+    } else if matches.subcommand_matches("start").is_some() {
         match start_watcher().await {
             Err(e) => {
-                let pid_path = home_dir()
-                    .expect("Could not find home directory")
-                    .join(".cdmkn")
-                    .join("watcher.pid");
+                let pid_path = cdmkn_dir().join("watcher.pid");
 
                 fs::remove_file(pid_path)?;
 
-                return Err(e);
+                Err(e)
             }
-            Ok(()) => {}
+            Ok(()) => Ok(()),
         }
-        //let dir = get_dir_arg(watch_matches);
-        // TODO: Figure out how to send this new repo to watcher process
     } else if let Some(init_matches) = matches.subcommand_matches("add") {
         let dir = get_dir_arg(init_matches);
+        let mut interval = time::interval(Duration::from_millis(5000));
+        // TODO: Figure out how to send this new repo to watcher process
+        // For now, we just restart watcher process. Hacky and race condition-y
+        // but let's just get this working
         add_repository(&Path::new(dir)).await?;
+        delete_pid_file()?;
+        interval.tick().await;
+        start_watcher().await
     } else if matches.subcommand_matches("status").is_some() {
-        print_status()?;
-    }
-    Ok(())
-}
-
-pub fn connect_to_db() -> Result<Connection> {
-    let database_path = home_dir()
-        .expect("Cannot find home directory")
-        .join(".cdmkn/database.db");
-
-    match Connection::open(database_path) {
-        Ok(conn) => Ok(conn),
-        Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Could not connect to db").into()),
+        print_status()
+    } else {
+        Ok(())
     }
 }
 
@@ -151,11 +156,16 @@ async fn start_watcher() -> Result<()> {
     // NOTE: This is a (not-so) subtle race condition where
     // in between reading and writing the pid file another process
     // could spin up. I'm not going to worry about that right now.
-    if read_pid_file()?.is_some() {
+    if let Some(pid) = read_pid_file()? {
+        println!("Watcher already running on pid {}", pid);
         return Ok(());
     }
     let pid = process::id();
     write_pid_file(pid)?;
+
+    ctrlc::set_handler(|| {
+        delete_pid_file().expect("Could not delete PID file at ~/.cdmkn/watcher.pid")
+    })?;
 
     let conn = connect_to_db()?;
     let mut watched_files = HashSet::new();
@@ -164,8 +174,6 @@ async fn start_watcher() -> Result<()> {
     let repos = get_repository_paths()?;
 
     while read_pid_file()?.is_some() {
-        println!("{:?}", watched_files);
-
         for repo in &repos {
             let walker = Walk::new(repo).into_iter();
 

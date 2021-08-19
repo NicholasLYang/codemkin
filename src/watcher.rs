@@ -1,9 +1,11 @@
-use crate::utils::cdmkn_dir;
+use crate::utils::{cdmkn_dir, connect_to_db};
+use difference::{Changeset, Difference};
 use eyre::Result;
 use notify::event::Event;
+use notify::EventKind;
 use rusqlite::Connection;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn read_pid_file() -> Result<Option<u32>> {
     let pid_path = cdmkn_dir().join("watcher.pid");
@@ -25,7 +27,7 @@ pub fn delete_pid_file() -> Result<()> {
     Ok(fs::remove_file(cdmkn_dir().join("watcher.pid"))?)
 }
 
-pub fn insert_file(conn: &Connection, repository_id: u32, file_path: &Path) -> Result<i64> {
+pub fn insert_file(conn: &Connection, repository_id: u32, file_path: &Path) -> Result<()> {
     let content = fs::read_to_string(file_path)?;
 
     conn.execute(
@@ -37,17 +39,55 @@ pub fn insert_file(conn: &Connection, repository_id: u32, file_path: &Path) -> R
             &content
         ],
     )?;
-    let id = conn.query_row(
-        "SELECT id FROM documents WHERE canonical_path = ?1",
-        &[file_path.canonicalize()?.to_str().unwrap()],
-        |row| row.get(0),
-    )?;
-    Ok(id)
+
+    Ok(())
 }
 
-pub fn on_update(res: notify::Result<Event>) {
-    match res {
-        Ok(event) => println!("event: {:?}", event),
-        Err(e) => println!("watch error: {:?}", e),
+pub fn on_update(res: notify::Result<Event>) -> Result<()> {
+    let event = res?;
+
+    match event.kind {
+        EventKind::Modify(_) => {
+            for files in event.paths {
+                get_file_diff(files)?;
+            }
+        }
+        _ => {}
     }
+    Ok(())
+}
+
+fn get_file_diff(path: PathBuf) -> Result<()> {
+    let conn = connect_to_db()?;
+
+    let (id, old_content): (i32, String) = conn.query_row(
+        "SELECT id, content FROM documents WHERE canonical_path = ?1",
+        &[path.canonicalize()?.to_str().unwrap()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+
+    let new_content = fs::read_to_string(path)?;
+    let changes = Changeset::new(&old_content, &new_content, "\n");
+    for diff in changes.diffs {
+        match diff {
+            Difference::Same(s) => {
+                println!("{}", s);
+            }
+            Difference::Add(s) => {
+                println!("+{}", s);
+            }
+            Difference::Rem(s) => {
+                println!("-{}", s);
+            }
+        }
+    }
+
+    if changes.distance > 0 {
+        conn.execute(
+            "UPDATE documents SET content = ?1 WHERE id = ?2",
+            &[new_content, format!("{}", id)],
+        )?;
+    }
+
+    Ok(())
 }

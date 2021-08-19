@@ -87,16 +87,8 @@ async fn main() -> Result<()> {
                 .about("Add repository")
                 .arg(Arg::with_name("dir")),
         )
-        .subcommand(
-            SubCommand::with_name("start")
-                .about("Start watching current repo")
-                .arg(Arg::with_name("dir")),
-        )
-        .subcommand(
-            SubCommand::with_name("stop")
-                .about("Stop watching current repo")
-                .arg(Arg::with_name("dir")),
-        )
+        .subcommand(SubCommand::with_name("start").about("Start watcher process"))
+        .subcommand(SubCommand::with_name("stop").about("Stop watcher process"))
         .subcommand(SubCommand::with_name("status").about("See current status for codemkin"))
         .get_matches();
 
@@ -116,23 +108,36 @@ async fn main() -> Result<()> {
         match start_watcher().await {
             Err(e) => {
                 let pid_path = cdmkn_dir().join("watcher.pid");
-
                 fs::remove_file(pid_path)?;
-
                 Err(e)
             }
             Ok(()) => Ok(()),
         }
+    } else if matches.subcommand_matches("stop").is_some() {
+        if read_pid_file()?.is_some() {
+            println!("Shutting down watcher...");
+            fs::remove_file(cdmkn_dir().join("watcher.pid"))?;
+        } else {
+            println!("Watcher process is not running");
+        }
+
+        Ok(())
     } else if let Some(init_matches) = matches.subcommand_matches("add") {
         let dir = get_dir_arg(init_matches);
         let mut interval = time::interval(Duration::from_millis(5000));
+
         // TODO: Figure out how to send this new repo to watcher process
         // For now, we just restart watcher process. Hacky and race condition-y
         // but let's just get this working
+
         add_repository(&Path::new(dir)).await?;
+        print!("Restarting watcher process...");
         delete_pid_file()?;
         interval.tick().await;
-        start_watcher().await
+        start_watcher().await?;
+        println!("done");
+
+        Ok(())
     } else if matches.subcommand_matches("status").is_some() {
         print_status()
     } else {
@@ -164,14 +169,17 @@ async fn start_watcher() -> Result<()> {
     write_pid_file(pid)?;
 
     ctrlc::set_handler(|| {
+        println!("\nShutting down...");
         delete_pid_file().expect("Could not delete PID file at ~/.cdmkn/watcher.pid")
     })?;
 
     let conn = connect_to_db()?;
     let mut watched_files = HashSet::new();
     let mut interval = time::interval(Duration::from_millis(5000));
-    let mut watcher = recommended_watcher(|res| on_update(res))?;
+    let mut watcher = recommended_watcher(|res| on_update(res).expect("Error watching file"))?;
     let repos = get_repository_paths()?;
+
+    println!("Watching on pid {}", pid);
 
     while read_pid_file()?.is_some() {
         for repo in &repos {
@@ -191,18 +199,15 @@ async fn start_watcher() -> Result<()> {
                     watched_files.insert(entry_path.clone());
                     watcher.watch(&entry_path, RecursiveMode::NonRecursive)?;
 
-                    match insert_file(&conn, 1, &entry_path) {
-                        Ok(id) => id,
-                        Err(err) => {
-                            if cfg!(debug_assertions) {
-                                eprintln!("{:?}", err);
-                            }
-                            return Err(io::Error::new(
-                                io::ErrorKind::Other,
-                                "Could not insert file into db",
-                            )
-                            .into());
+                    if let Err(err) = insert_file(&conn, 1, &entry_path) {
+                        if cfg!(debug_assertions) {
+                            eprintln!("{:?}", err);
                         }
+                        return Err(io::Error::new(
+                            io::ErrorKind::Other,
+                            "Could not insert file into db",
+                        )
+                        .into());
                     };
                 }
             }

@@ -46,13 +46,10 @@ pub fn insert_file(conn: &Connection, repository_id: u32, file_path: &Path) -> R
 pub fn on_update(res: notify::Result<Event>) -> Result<()> {
     let event = res?;
 
-    match event.kind {
-        EventKind::Modify(_) => {
-            for files in event.paths {
-                get_file_diff(files)?;
-            }
+    if let EventKind::Modify(_) = event.kind {
+        for files in event.paths {
+            get_file_diff(files)?;
         }
-        _ => {}
     }
     Ok(())
 }
@@ -68,19 +65,22 @@ fn get_file_diff(path: PathBuf) -> Result<()> {
 
     let new_content = fs::read_to_string(path)?;
     let changes = Changeset::new(&old_content, &new_content, "\n");
-    for diff in changes.diffs {
-        match diff {
+    changes
+        .diffs
+        .iter()
+        .map(|diff| match diff {
             Difference::Same(s) => {
-                println!("{}", s);
+                format!("{{ type: \"same\", content: \"{}\" }}", s)
             }
             Difference::Add(s) => {
-                println!("+{}", s);
+                format!("{{ type: \"add\", content: \"{}\" }}", s)
             }
             Difference::Rem(s) => {
-                println!("-{}", s);
+                format!("{{ type: \"remove\", content: \"{}\" }}", s)
             }
-        }
-    }
+        })
+        .collect::<Vec<String>>()
+        .join(",");
 
     if changes.distance > 0 {
         conn.execute(

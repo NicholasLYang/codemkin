@@ -130,7 +130,7 @@ async fn main() -> Result<()> {
         // For now, we just restart watcher process. Hacky and race condition-y
         // but let's just get this working
 
-        add_repository(&Path::new(dir)).await?;
+        add_repository(Path::new(dir)).await?;
         print!("Restarting watcher process...");
         delete_pid_file()?;
         interval.tick().await;
@@ -183,7 +183,7 @@ async fn start_watcher() -> Result<()> {
 
     while read_pid_file()?.is_some() {
         for repo in &repos {
-            let walker = Walk::new(repo).into_iter();
+            let walker = Walk::new(repo);
 
             for entry in walker {
                 let entry = match entry {

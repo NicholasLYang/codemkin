@@ -5,30 +5,21 @@ use serde::{Deserialize, Serialize};
 // TODO: Use this to activate/deactivate the watcher
 // for specific repos
 pub enum RepoStatus {
-    Inactive = 0,
-    Starting = 1,
+    // Inactive = 0,
+    //    Starting = 1,
     Active = 2,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TokenCredentials {
-    pub token: String,
-    pub client: String,
-    pub expiry: String,
-    pub token_type: String,
-    pub uid: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InternalConfig {
     pub id: String,
-    pub token_credentials: Option<TokenCredentials>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Repository {
-    pub id: String,
-    pub name: String,
+    pub id: i64,
+    pub absolute_path: String,
+    pub current_event: Option<i64>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -48,13 +39,9 @@ pub struct RepositoryRequest {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct DocumentRequest<'a> {
-    pub path: &'a str,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct Document {
-    pub id: String,
+    pub id: i64,
+    pub content: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

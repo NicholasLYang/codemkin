@@ -1,11 +1,10 @@
+use crate::types::Document;
 use crate::utils::{cdmkn_dir, connect_to_db};
 use difference::{Changeset, Difference};
 use eyre::Result;
-use notify::event::Event;
-use notify::EventKind;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub fn read_pid_file() -> Result<Option<u32>> {
     let pid_path = cdmkn_dir().join("watcher.pid");
@@ -27,45 +26,48 @@ pub fn delete_pid_file() -> Result<()> {
     Ok(fs::remove_file(cdmkn_dir().join("watcher.pid"))?)
 }
 
-pub fn insert_file(conn: &Connection, repository_id: u32, file_path: &Path) -> Result<()> {
+pub fn add_document(conn: &Connection, repository_id: i64, file_path: &Path) -> Result<Document> {
     let content = fs::read_to_string(file_path)?;
+    let canonical_path = file_path.canonicalize()?;
+    let canonical_path_str = canonical_path.to_str().unwrap();
 
     conn.execute(
         "INSERT OR IGNORE INTO documents (repository_id, relative_path, canonical_path, content) VALUES (?1, ?2, ?3, ?4)",
-        &[
-            &format!("{}", repository_id),
+        params![
+            repository_id,
             file_path.to_str().unwrap(),
-            file_path.canonicalize()?.to_str().unwrap(),
+            canonical_path_str,
             &content
         ],
     )?;
 
-    Ok(())
+    Ok(conn.query_row(
+        "SELECT id, content FROM documents WHERE repository_id = ?1 AND canonical_path = ?2",
+        params![repository_id, canonical_path_str],
+        |row| {
+            Ok(Document {
+                id: row.get(0)?,
+                content: row.get(1)?,
+            })
+        },
+    )?)
 }
 
-pub fn on_update(res: notify::Result<Event>) -> Result<()> {
-    let event = res?;
+/// Gets document from the database and compares it with the content of the file.
+pub fn update_document(
+    repo_id: i64,
+    event_id: i64,
+    path: &Path,
+    old_content: &str,
+    new_content: &str,
+) -> Result<bool> {
+    let conn = connect_to_db();
 
-    if let EventKind::Modify(_) = event.kind {
-        for files in event.paths {
-            get_file_diff(files)?;
-        }
-    }
-    Ok(())
-}
+    let doc = add_document(&conn, repo_id, &path)?;
 
-fn get_file_diff(path: PathBuf) -> Result<()> {
-    let conn = connect_to_db()?;
+    let changes = Changeset::new(old_content, new_content, "\n");
 
-    let (id, old_content): (i32, String) = conn.query_row(
-        "SELECT id, content FROM documents WHERE canonical_path = ?1",
-        &[path.canonicalize()?.to_str().unwrap()],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-
-    let new_content = fs::read_to_string(path)?;
-    let changes = Changeset::new(&old_content, &new_content, "\n");
-    changes
+    let changes = changes
         .diffs
         .iter()
         .map(|diff| match diff {
@@ -82,12 +84,17 @@ fn get_file_diff(path: PathBuf) -> Result<()> {
         .collect::<Vec<String>>()
         .join(",");
 
-    if changes.distance > 0 {
-        conn.execute(
-            "UPDATE documents SET content = ?1 WHERE id = ?2",
-            &[new_content, format!("{}", id)],
-        )?;
-    }
+    conn.execute(
+        "INSERT INTO changes (document_id, event_id, change_elements) VALUES (?1, ?2, ?3)",
+        params![&doc.id, &event_id, &changes],
+    )?;
 
     Ok(())
+    // TODO: Figure out way to cache documents so we don't have to replay changes
+    // if changes.distance > 0 {
+    //     conn.execute(
+    //         "UPDATE documents SET content = ?1 WHERE id = ?2",
+    //         &[new_content, format!("{}", id)],
+    //     )?;
+    // }
 }

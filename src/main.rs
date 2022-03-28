@@ -1,20 +1,19 @@
 use crate::init::init_folder;
+use crate::types::Repository;
 use crate::utils::{cdmkn_dir, connect_to_db};
-use crate::watcher::{delete_pid_file, on_update, read_pid_file, write_pid_file};
+use crate::watcher::{delete_pid_file, read_pid_file, update_document, write_pid_file};
 use clap::{App, AppSettings, Arg, ArgMatches, SubCommand};
 use color_eyre::Report;
 use eyre::Result;
 use ignore::{DirEntry, Walk};
 use init::add_repository;
-use notify::{recommended_watcher, RecursiveMode, Watcher};
-use rusqlite::NO_PARAMS;
-use std::collections::HashSet;
-use std::path::Path;
+use rusqlite::params;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
-use std::{fs, io, process};
+use std::{fs, process};
 use thiserror::Error;
 use tokio::time;
-use watcher::insert_file;
 
 mod init;
 mod types;
@@ -41,9 +40,9 @@ pub fn is_valid_file(entry: &DirEntry) -> bool {
 
 fn print_status() -> Result<()> {
     if let Some(pid) = read_pid_file()? {
-        let conn = connect_to_db()?;
+        let conn = connect_to_db();
         let count =
-            conn.query_row::<u32, _, _>("SELECT COUNT(*) FROM repositories;", NO_PARAMS, |row| {
+            conn.query_row::<u32, _, _>("SELECT COUNT(*) FROM repositories;", [], |row| {
                 row.get(0)
             })?;
         println!("Watching {} repositories on pid {}", count, pid);
@@ -93,14 +92,15 @@ async fn main() -> Result<()> {
         .get_matches();
 
     if matches.subcommand_matches("repos").is_some() {
-        let repos = get_repository_paths()?;
+        let repos = get_repositories()?;
 
         if repos.is_empty() {
             println!("No repositories! Add one with `cdmkn add`");
         }
 
-        for repo in repos {
-            println!("{}", repo);
+        println!("Repositories:");
+        for Repository { absolute_path, .. } in repos {
+            println!("- {}", absolute_path);
         }
 
         Ok(())
@@ -124,18 +124,7 @@ async fn main() -> Result<()> {
         Ok(())
     } else if let Some(init_matches) = matches.subcommand_matches("add") {
         let dir = get_dir_arg(init_matches);
-        let mut interval = time::interval(Duration::from_millis(5000));
-
-        // TODO: Figure out how to send this new repo to watcher process
-        // For now, we just restart watcher process. Hacky and race condition-y
-        // but let's just get this working
-
         add_repository(Path::new(dir)).await?;
-        print!("Restarting watcher process...");
-        delete_pid_file()?;
-        interval.tick().await;
-        start_watcher().await?;
-        println!("done");
 
         Ok(())
     } else if matches.subcommand_matches("status").is_some() {
@@ -145,13 +134,40 @@ async fn main() -> Result<()> {
     }
 }
 
-fn get_repository_paths() -> Result<Vec<String>> {
-    let conn = connect_to_db()?;
-    let mut stmt = conn.prepare("SELECT absolute_path FROM repositories")?;
+fn add_event(repo_id: i64, current_event: Option<i64>) -> Result<i64> {
+    let mut conn = connect_to_db();
+    let tx = conn.transaction()?;
+
+    let event_id = {
+        let mut insert_events_stmt =
+            tx.prepare("INSERT INTO events (repository_id, parent_event) VALUES (?1, ?2)")?;
+        insert_events_stmt.insert(params![repo_id, current_event])?
+    };
+
+    {
+        let mut update_repository_stmt =
+            tx.prepare("UPDATE repositories SET current_event = ?1 WHERE id = ?2")?;
+        update_repository_stmt.execute(&[&event_id, &repo_id])?;
+    }
+
+    tx.commit()?;
+
+    Ok(event_id)
+}
+
+fn get_repositories() -> Result<Vec<Repository>> {
+    let conn = connect_to_db();
+    let mut stmt = conn.prepare("SELECT id, absolute_path, current_event FROM repositories")?;
 
     let res = stmt
-        .query_map::<String, _, _>(NO_PARAMS, |row| row.get(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+        .query_map([], |row| {
+            Ok(Repository {
+                id: row.get(0)?,
+                absolute_path: row.get(1)?,
+                current_event: row.get(2)?,
+            })
+        })?
+        .collect::<rusqlite::Result<_>>()?;
 
     Ok(res)
 }
@@ -165,6 +181,7 @@ async fn start_watcher() -> Result<()> {
         println!("Watcher already running on pid {}", pid);
         return Ok(());
     }
+
     let pid = process::id();
     write_pid_file(pid)?;
 
@@ -173,42 +190,51 @@ async fn start_watcher() -> Result<()> {
         delete_pid_file().expect("Could not delete PID file at ~/.cdmkn/watcher.pid")
     })?;
 
-    let conn = connect_to_db()?;
-    let mut watched_files = HashSet::new();
     let mut interval = time::interval(Duration::from_millis(5000));
-    let mut watcher = recommended_watcher(|res| on_update(res).expect("Error watching file"))?;
-    let repos = get_repository_paths()?;
 
     println!("Watching on pid {}", pid);
 
-    while read_pid_file()?.is_some() {
-        for repo in &repos {
-            let walker = Walk::new(repo);
+    let mut file_contents: HashMap<PathBuf, String> = HashMap::new();
 
-            for entry in walker {
-                let entry = match entry {
+    while read_pid_file()?.is_some() {
+        // To make sure we're not watching the same file twice
+        let mut visited_files: HashMap<PathBuf, String> = HashSet::new();
+        let repos = get_repositories()?;
+
+        for Repository {
+            id: repo_id,
+            absolute_path: repo_path,
+            current_event,
+        } in &repos
+        {
+            let event_id = add_event(*repo_id, *current_event)?;
+            let walker = Walk::new(repo_path);
+
+            for file_entry in walker {
+                let file_entry = match file_entry {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
 
-                let is_valid_file = is_valid_file(&entry);
-                let entry_path = entry.into_path();
-                let is_watched = watched_files.contains(&entry_path);
+                let is_valid_file = is_valid_file(&file_entry);
 
-                if is_valid_file && !is_watched {
-                    watched_files.insert(entry_path.clone());
-                    watcher.watch(&entry_path, RecursiveMode::NonRecursive)?;
+                let file_path = file_entry.into_path();
+                let not_visited = !visited_files.contains(&file_path);
 
-                    if let Err(err) = insert_file(&conn, 1, &entry_path) {
-                        if cfg!(debug_assertions) {
-                            eprintln!("{:?}", err);
-                        }
-                        return Err(io::Error::new(
-                            io::ErrorKind::Other,
-                            "Could not insert file into db",
-                        )
-                        .into());
-                    };
+                if is_valid_file && not_visited {
+                    let old_content = file_contents.get(&file_path);
+                    let new_content = fs::read_to_string(&file_path)?;
+
+                    update_document(
+                        *repo_id,
+                        event_id,
+                        &file_path,
+                        old_content.map(|c| c.as_str()).unwrap_or(""),
+                        &new_content,
+                    )?;
+
+                    visited_files.insert(file_path.clone());
+                    file_contents.insert(file_path, new_content);
                 }
             }
         }

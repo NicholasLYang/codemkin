@@ -1,16 +1,16 @@
+use crate::init_folder;
 use dirs::home_dir;
-use eyre::Result;
 use rusqlite::Connection;
-use std::io;
 use std::path::PathBuf;
 
-pub fn connect_to_db() -> Result<Connection> {
+pub fn connect_to_db() -> Connection {
     let database_path = cdmkn_dir().join("database.db");
 
-    match Connection::open(database_path) {
-        Ok(conn) => Ok(conn),
-        Err(_) => Err(io::Error::new(io::ErrorKind::Other, "Could not connect to db").into()),
+    if !database_path.exists() {
+        println!("Database doesn't exist. Creating...");
+        init_folder().expect("Unable to create folder");
     }
+    Connection::open(database_path).expect("Failed to connect to database")
 }
 
 // TODO: Make a lazy_static or once_cell

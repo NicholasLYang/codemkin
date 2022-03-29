@@ -67,6 +67,8 @@ pub fn update_document(
 
     let changes = Changeset::new(old_content, new_content, "\n");
 
+    let is_changed = changes.distance != 0;
+
     let changes = changes
         .diffs
         .iter()
@@ -84,12 +86,14 @@ pub fn update_document(
         .collect::<Vec<String>>()
         .join(",");
 
-    conn.execute(
-        "INSERT INTO changes (document_id, event_id, change_elements) VALUES (?1, ?2, ?3)",
-        params![&doc.id, &event_id, &changes],
-    )?;
+    if is_changed {
+        conn.execute(
+            "INSERT INTO changes (document_id, event_id, change_elements) VALUES (?1, ?2, ?3)",
+            params![&doc.id, &event_id, &changes],
+        )?;
+    }
 
-    Ok(())
+    Ok(is_changed)
     // TODO: Figure out way to cache documents so we don't have to replay changes
     // if changes.distance > 0 {
     //     conn.execute(
